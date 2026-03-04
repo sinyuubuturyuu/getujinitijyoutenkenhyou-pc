@@ -10,6 +10,11 @@ npm start
 
 3. ブラウザで `http://localhost:3000` を開く
 
+## GitHub Pagesで開く
+- ルートの `index.html` から `src/index.html` へ遷移します。
+- Pagesでは `server/server.js` が動かないため、保存先はブラウザの `localStorage` になります。
+- 同じブラウザ・同じ端末でのみ保存データを再読込できます。
+
 ## 実装済み
 - 点検セルクリックで `レ -> ☓ -> ▲ -> 空欄`
 - 運行管理者印: 岸田

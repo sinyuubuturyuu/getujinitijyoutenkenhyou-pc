@@ -9,17 +9,13 @@
 <body>
   <header class="app-header">
     <h1>月次日常点検記録</h1>
-    <div class="toolbar">
+    <div id="toolbar" class="toolbar">
       <label>対象月<input type="month" id="month" value="2026-01" /></label>
       <label>車番<input type="text" id="vehicle" placeholder="例: 品川100あ1234" /></label>
       <label>運転者<input type="text" id="driver" placeholder="例: 田中" /></label>
       <button id="loadBtn" type="button">読込</button>
       <button id="saveBtn" type="button">保存</button>
       <span id="status"></span>
-    </div>
-    <div class="stamp-actions">
-      <button data-stamp-target="operationManager" data-stamp-value="岸田" type="button">運行管理者印: 岸田</button>
-      <button data-stamp-target="maintenanceManager" data-stamp-value="若本" type="button">整備管理者印: 若本</button>
     </div>
   </header>
 
@@ -28,33 +24,36 @@
       <table id="inspectionTable">
         <thead>
           <tr>
-            <th colspan="8" class="company">有限会社シンユウ物流</th>
-            <th colspan="20" class="title">月 次 点 検 記 録 表</th>
-            <th colspan="2" class="manager-title">運行管理者</th>
-            <th colspan="2" class="manager-title">整備管理者</th>
+            <th id="companyHead" colspan="8" class="company">有限会社シンユウ物流</th>
+            <th id="titleHead" colspan="24" class="title">月 次 点 検 記 録 表</th>
+            <th id="operationHead" colspan="4" class="manager-title">運行管理者</th>
+            <th id="maintenanceHead" colspan="4" class="manager-title">整備管理者</th>
           </tr>
           <tr>
-            <th colspan="5" class="month-cell">令和8年 <span id="monthText">1</span>月</th>
-            <th colspan="3" class="vehicle-cell">車番: <span id="vehicleText">-</span></th>
-            <th colspan="20" class="driver-cell">運転者名（点検者）: <span id="driverText">-</span></th>
-            <th colspan="2" rowspan="2" class="stamp-slot" id="operationManagerSlot"></th>
-            <th colspan="2" rowspan="2" class="stamp-slot" id="maintenanceManagerSlot"></th>
+            <th id="monthHead" colspan="5" class="month-cell">令和8年 <span id="monthText">1</span>月</th>
+            <th id="vehicleHead" colspan="3" class="vehicle-cell">車番: <span id="vehicleText">-</span></th>
+            <th id="driverHead" colspan="24" class="driver-cell">運転者名（点検者）: <span id="driverText">-</span></th>
+            <th id="operationManagerSlot" colspan="4" class="stamp-slot"></th>
+            <th id="maintenanceManagerSlot" colspan="4" class="stamp-slot"></th>
           </tr>
-          <tr>
+          <tr id="datesRow">
             <th colspan="4" rowspan="2">点検個所</th>
-            <th colspan="4" rowspan="2">点検内容</th>
-            <th class="day-label">日</th>
-            <th class="day-label" colspan="31">1 - 31</th>
+            <th colspan="4" rowspan="2" class="content-head">
+              <div class="content-head-inner">
+                <span class="content-title">点検内容</span>
+                <span class="day-mark-stack">
+                  <span class="day-mark-cell">日</span>
+                  <span class="day-mark-cell">曜</span>
+                </span>
+              </div>
+            </th>
           </tr>
-          <tr id="daysRow">
-            <th class="dow-label">曜</th>
-          </tr>
+          <tr id="daysRow"></tr>
         </thead>
         <tbody id="inspectionBody"></tbody>
         <tfoot>
           <tr id="maintenanceFooterRow">
             <td colspan="8" class="bottom-label">整備管理者 印</td>
-            <td class="day"></td>
           </tr>
         </tfoot>
       </table>
