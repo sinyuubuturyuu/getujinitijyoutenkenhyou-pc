@@ -175,18 +175,6 @@ th, td {
   height: 52px;
   border-width: 3px;
 }
-.hanko::before {
-  content: "";
-  position: absolute;
-  inset: 3px;
-  border: 1px solid var(--seal);
-  border-radius: 50%;
-  opacity: 0.8;
-}
-.hanko-large::before {
-  inset: 7px;
-  border-width: 1.5px;
-}
 .hanko span {
   font-weight: 700;
   font-size: 10px;
