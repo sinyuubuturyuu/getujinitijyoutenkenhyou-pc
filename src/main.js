@@ -1,4 +1,53 @@
-﻿const CHECK_STATES = ["", "レ", "☓", "▲"];
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
+import {
+  collection,
+  doc,
+  getDocs,
+  getFirestore,
+  limit,
+  query,
+  serverTimestamp,
+  setDoc,
+  where
+} from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
+
+const CHECK_STATES = ["", "レ", "☓", "▲"];
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDwthcbGvnkb2Q-K7NjX8SMvVdGZCUUDeA",
+  authDomain: "getujinitijyoutenkenhyou.firebaseapp.com",
+  projectId: "getujinitijyoutenkenhyou",
+  storageBucket: "getujinitijyoutenkenhyou.firebasestorage.app",
+  messagingSenderId: "683991833697",
+  appId: "1:683991833697:web:a7e0e3b3a85993e7729e20",
+  measurementId: "G-TDM7LJ221S"
+};
+
+const FIRESTORE_COLLECTION = "monthlyInspectionEntries";
+const CHECK_FIELD_ORDER = [
+  "brake_pedal",
+  "brake_fluid",
+  "air_pressure",
+  "exhaust_sound",
+  "parking_brake",
+  "tire_pressure",
+  "tire_damage",
+  "tire_tread",
+  "wheel_nut",
+  "battery_fluid",
+  "coolant",
+  "fan_belt",
+  "engine_oil",
+  "engine_start",
+  "engine_response",
+  "lights_status",
+  "washer_fluid",
+  "wiper_status",
+  "air_tank_water",
+  "documents",
+  "emergency_tools",
+  "report_changes"
+];
 
 const GROUPS = [
   {
@@ -45,10 +94,13 @@ const state = {
   checks: {},
   operationManager: "",
   maintenanceManager: "",
-  maintenanceBottomByDay: {}
+  maintenanceBottomByDay: {},
+  holidayDays: [],
+  loadedDocId: null
 };
-const STORAGE_NAMESPACE = "getujitenkenhyou_records_v1";
-const isStaticMode = window.location.protocol.startsWith("http") && !window.location.hostname.includes("localhost");
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 function getSelectedYearMonth() {
   const [yearText, monthText] = monthEl.value.split("-");
@@ -193,10 +245,14 @@ function renderBody() {
 }
 
 function syncHeaderInfo() {
-  const [year, month] = monthEl.value.split("-");
+  const [, month] = monthEl.value.split("-");
   monthTextEl.textContent = month ? String(Number(month)) : "-";
   vehicleTextEl.textContent = vehicleEl.value.trim() || "-";
   driverTextEl.textContent = driverEl.value.trim() || "-";
+}
+
+function clearLoadedDocId() {
+  state.loadedDocId = null;
 }
 
 function setStatus(message, isError = false) {
@@ -208,24 +264,69 @@ function buildRecordKey(month, vehicle, driver) {
   return `${month}__${vehicle}__${driver}`;
 }
 
+function resetRecordState() {
+  state.checks = {};
+  state.operationManager = "";
+  state.maintenanceManager = "";
+  state.maintenanceBottomByDay = {};
+  state.holidayDays = [];
+  state.loadedDocId = null;
+}
+
 function getSaveLocationMessage(month, vehicle, driver) {
-  const key = buildRecordKey(month, vehicle, driver);
-  if (isStaticMode) {
-    return `保存先: このブラウザ内（localStorage）\nキー: ${key}`;
-  }
-  return `保存先: サーバー側 data/records.json\nキー: ${key}`;
+  return `保存先: Firestore / ${FIRESTORE_COLLECTION}\n一致キー: ${buildRecordKey(month, vehicle, driver)}`;
 }
 
-function loadLocalStore() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_NAMESPACE) || "{\"records\":{}}");
-  } catch {
-    return { records: {} };
-  }
+function toFirestoreChecksByDay(checks) {
+  const checksByDay = {};
+  Object.entries(checks).forEach(([cellKey, value]) => {
+    if (!value) return;
+    const [rowIndexText, dayText] = cellKey.split("_");
+    const rowIndex = Number(rowIndexText);
+    const day = String(Number(dayText));
+    const fieldKey = CHECK_FIELD_ORDER[rowIndex];
+    if (!fieldKey || !day) return;
+    if (!checksByDay[day]) {
+      checksByDay[day] = {};
+    }
+    checksByDay[day][fieldKey] = value;
+  });
+  return checksByDay;
 }
 
-function saveLocalStore(store) {
-  localStorage.setItem(STORAGE_NAMESPACE, JSON.stringify(store));
+function fromFirestoreChecksByDay(checksByDay = {}) {
+  const checks = {};
+  Object.entries(checksByDay).forEach(([dayText, valuesByField]) => {
+    const day = Number(dayText);
+    if (!day || typeof valuesByField !== "object" || valuesByField === null) return;
+    CHECK_FIELD_ORDER.forEach((fieldKey, rowIndex) => {
+      const value = valuesByField[fieldKey];
+      if (typeof value === "string" && value) {
+        checks[checkKey(rowIndex, day)] = value;
+      }
+    });
+  });
+  return checks;
+}
+
+async function findRecord(month, vehicle, driver) {
+  const recordsRef = collection(db, FIRESTORE_COLLECTION);
+  const recordQuery = query(
+    recordsRef,
+    where("month", "==", month),
+    where("vehicle", "==", vehicle),
+    where("driver", "==", driver),
+    limit(1)
+  );
+  const snapshot = await getDocs(recordQuery);
+  if (snapshot.empty) {
+    return null;
+  }
+  const recordDoc = snapshot.docs[0];
+  return {
+    id: recordDoc.id,
+    data: recordDoc.data()
+  };
 }
 
 async function loadRecord() {
@@ -237,31 +338,23 @@ async function loadRecord() {
     return;
   }
 
-  let data;
-  if (isStaticMode) {
-    const store = loadLocalStore();
-    const key = buildRecordKey(month, vehicle, driver);
-    data = { key, record: store.records[key] || null };
-  } else {
-    const res = await fetch(`/api/record?month=${encodeURIComponent(month)}&vehicle=${encodeURIComponent(vehicle)}&driver=${encodeURIComponent(driver)}`);
-    data = await res.json();
-  }
-
-  if (!data.record) {
-    state.checks = {};
+  const record = await findRecord(month, vehicle, driver);
+  if (!record) {
+    resetRecordState();
     setStamp("operationManager", "");
     setStamp("maintenanceManager", "");
-    state.maintenanceBottomByDay = {};
     renderBody();
     renderBottomStampRow();
-    setStatus("データがないため新規入力モードです。");
+    setStatus("Firestore に一致データがないため新規入力モードです。");
     return;
   }
 
-  state.checks = data.record.checks || {};
-  setStamp("operationManager", data.record.operationManager || "");
-  setStamp("maintenanceManager", data.record.maintenanceManager || "");
-  state.maintenanceBottomByDay = data.record.maintenanceBottomByDay || {};
+  state.loadedDocId = record.id;
+  state.checks = fromFirestoreChecksByDay(record.data.checksByDay);
+  setStamp("operationManager", record.data.operationManager || "");
+  setStamp("maintenanceManager", record.data.maintenanceManager || "");
+  state.maintenanceBottomByDay = record.data.maintenanceBottomByDay || {};
+  state.holidayDays = Array.isArray(record.data.holidayDays) ? record.data.holidayDays : [];
   renderBody();
   renderBottomStampRow();
   setStatus("読込完了");
@@ -275,6 +368,7 @@ async function saveRecord() {
     setStatus("保存前に車番・運転者を入力してください", true);
     return;
   }
+
   const saveLocationMessage = getSaveLocationMessage(month, vehicle, driver);
   const accepted = window.confirm(`保存先を確認してください。\n\n${saveLocationMessage}\n\nこの場所に保存しますか？`);
   if (!accepted) {
@@ -282,49 +376,41 @@ async function saveRecord() {
     return;
   }
 
+  const existingRecord = await findRecord(month, vehicle, driver);
+  const docId = existingRecord?.id || state.loadedDocId || buildRecordKey(month, vehicle, driver);
   const payload = {
     month,
     vehicle,
     driver,
-    record: {
-      checks: state.checks,
-      operationManager: state.operationManager,
-      maintenanceManager: state.maintenanceManager,
-      maintenanceBottomByDay: state.maintenanceBottomByDay
-    }
+    checksByDay: toFirestoreChecksByDay(state.checks),
+    operationManager: state.operationManager,
+    maintenanceManager: state.maintenanceManager,
+    maintenanceBottomByDay: state.maintenanceBottomByDay,
+    holidayDays: state.holidayDays,
+    updatedAt: serverTimestamp()
   };
 
-  if (isStaticMode) {
-    const store = loadLocalStore();
-    const key = buildRecordKey(month, vehicle, driver);
-    store.records[key] = payload.record;
-    saveLocalStore(store);
-    setStatus("保存完了（Pages: ブラウザ保存）");
-    return;
-  }
-
-  const res = await fetch("/api/record", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    setStatus(`保存失敗: ${data.error || "unknown"}`, true);
-    return;
-  }
+  await setDoc(doc(db, FIRESTORE_COLLECTION, docId), payload, { merge: true });
+  state.loadedDocId = docId;
   setStatus("保存完了");
 }
 
 monthEl.addEventListener("change", () => {
+  clearLoadedDocId();
   syncHeaderInfo();
   renderDays();
   renderBody();
   renderBottomStampRow();
   syncToolbarWidth();
 });
-vehicleEl.addEventListener("input", syncHeaderInfo);
-driverEl.addEventListener("input", syncHeaderInfo);
+vehicleEl.addEventListener("input", () => {
+  clearLoadedDocId();
+  syncHeaderInfo();
+});
+driverEl.addEventListener("input", () => {
+  clearLoadedDocId();
+  syncHeaderInfo();
+});
 window.addEventListener("resize", syncToolbarWidth);
 
 document.getElementById("loadBtn").addEventListener("click", () => {
