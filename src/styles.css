@@ -29,7 +29,7 @@ body {
 
 .toolbar {
   display: grid;
-  grid-template-columns: 170px 260px 220px 90px 90px minmax(140px, 1fr);
+  grid-template-columns: 170px 260px 220px 90px 90px 96px 96px minmax(140px, 1fr) 90px;
   gap: 8px;
   align-items: end;
   width: max-content;
@@ -203,4 +203,116 @@ th, td {
   .app-header { position: static; }
   .hanko { width: 24px; height: 24px; }
   .hanko span { font-size: 9px; }
+}
+
+@page {
+  size: A4 landscape;
+  margin: 6mm;
+}
+
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  .app-header {
+    display: none;
+  }
+
+  .sheet-wrap {
+    padding: 0;
+  }
+
+  .sheet {
+    border: 0;
+    overflow: visible;
+  }
+
+  table {
+    width: 100%;
+  }
+
+  th,
+  td {
+    font-size: 8px;
+    padding: 1px;
+    height: 20px;
+  }
+
+  .sheet thead tr:nth-child(-n+2) th {
+    height: 38px;
+  }
+
+  .company,
+  .title {
+    font-size: 18px;
+  }
+
+  .month-cell,
+  .vehicle-cell,
+  .driver-cell,
+  .manager-title,
+  .bottom-label {
+    font-size: 9px;
+  }
+
+  .category {
+    width: 72px;
+    font-size: 9px;
+  }
+
+  .content {
+    width: 120px;
+    font-size: 8px;
+    padding-left: 3px;
+  }
+
+  .day-label,
+  .dow-label,
+  .day,
+  .check-cell,
+  .bottom-day-cell {
+    width: 16px;
+    min-width: 16px;
+    max-width: 16px;
+    font-size: 7px;
+  }
+
+  .day-mark-stack,
+  .content-head-inner {
+    grid-template-columns: 1fr 16px;
+  }
+
+  .day-mark-cell {
+    font-size: 7px;
+  }
+
+  .stamp-slot {
+    min-height: 38px;
+  }
+
+  .bottom-day-cell {
+    height: 38px;
+  }
+
+  .hanko-small {
+    width: 16px;
+    height: 16px;
+    border-width: 1px;
+  }
+
+  .hanko-large {
+    width: 34px;
+    height: 34px;
+    border-width: 2px;
+  }
+
+  .hanko span {
+    font-size: 6px;
+  }
+
+  .hanko-large span {
+    font-size: 11px;
+  }
 }

@@ -69,6 +69,8 @@ const CHECK_FIELD_ORDER = [
   "emergency_tools",
   "report_changes"
 ];
+const CHECK_FIELD_INDEX = Object.fromEntries(CHECK_FIELD_ORDER.map((fieldKey, index) => [fieldKey, index]));
+const CSV_HEADER = ["recordType", "dayOrKey", "fieldKey", "value"];
 
 const GROUPS = [
   {
@@ -110,6 +112,9 @@ const titleHeadEl = document.getElementById("titleHead");
 const operationHeadEl = document.getElementById("operationHead");
 const maintenanceHeadEl = document.getElementById("maintenanceHead");
 const driverHeadEl = document.getElementById("driverHead");
+const exportCsvBtnEl = document.getElementById("exportCsvBtn");
+const importCsvBtnEl = document.getElementById("importCsvBtn");
+const csvImportInputEl = document.getElementById("csvImportInput");
 
 const state = {
   checks: {},
@@ -207,6 +212,96 @@ function setSelectOptions(selectEl, options, placeholder, selectedValue = "") {
   });
 
   selectEl.value = normalizedSelectedValue;
+}
+
+function ensureSelectValue(selectEl, value) {
+  const normalizedValue = normalizeOptionValue(value);
+  if (!normalizedValue) {
+    selectEl.value = "";
+    return;
+  }
+
+  const hasOption = Array.from(selectEl.options).some((option) => option.value === normalizedValue);
+  if (!hasOption) {
+    const optionEl = document.createElement("option");
+    optionEl.value = normalizedValue;
+    optionEl.textContent = normalizedValue;
+    selectEl.append(optionEl);
+  }
+
+  selectEl.value = normalizedValue;
+}
+
+function escapeCsvValue(value) {
+  const text = value == null ? "" : String(value);
+  if (!/[",\r\n]/.test(text)) {
+    return text;
+  }
+  return `"${text.replace(/"/g, "\"\"")}"`;
+}
+
+function serializeCsv(rows) {
+  return rows.map((row) => row.map((value) => escapeCsvValue(value)).join(",")).join("\r\n");
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inQuotes) {
+      if (char === "\"") {
+        if (text[index + 1] === "\"") {
+          value += "\"";
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        value += char;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inQuotes = true;
+      continue;
+    }
+
+    if (char === ",") {
+      row.push(value);
+      value = "";
+      continue;
+    }
+
+    if (char === "\r" || char === "\n") {
+      row.push(value);
+      rows.push(row);
+      row = [];
+      value = "";
+      if (char === "\r" && text[index + 1] === "\n") {
+        index += 1;
+      }
+      continue;
+    }
+
+    value += char;
+  }
+
+  if (inQuotes) {
+    throw new Error("CSVの引用符が閉じられていません");
+  }
+
+  if (value || row.length) {
+    row.push(value);
+    rows.push(row);
+  }
+
+  return rows.filter((csvRow) => csvRow.some((cell) => cell !== ""));
 }
 
 async function loadReferenceOptions() {
@@ -465,6 +560,11 @@ function syncToolbarWidth() {
   }
 }
 
+function printSheet() {
+  syncHeaderInfo();
+  window.print();
+}
+
 function renderBody() {
   bodyEl.innerHTML = "";
   const daysInMonth = getDaysInSelectedMonth();
@@ -538,6 +638,192 @@ function resetRecordState() {
   state.maintenanceBottomByDay = {};
   state.holidayDays = [];
   state.loadedDocId = null;
+}
+
+function sanitizeFileNamePart(value, fallback) {
+  const normalizedValue = normalizeOptionValue(value);
+  if (!normalizedValue) {
+    return fallback;
+  }
+  return normalizedValue.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_");
+}
+
+function buildCsvRows() {
+  syncHolidayChecks();
+
+  const rows = [
+    CSV_HEADER,
+    ["meta", "month", "", monthEl.value],
+    ["meta", "vehicle", "", vehicleEl.value.trim()],
+    ["meta", "driver", "", driverEl.value.trim()],
+    ["meta", "operationManager", "", state.operationManager],
+    ["meta", "maintenanceManager", "", state.maintenanceManager]
+  ];
+
+  state.holidayDays
+    .slice()
+    .sort((left, right) => left - right)
+    .forEach((day) => {
+      rows.push(["holiday", String(day), "", "1"]);
+    });
+
+  const checksByDay = toFirestoreChecksByDay(state.checks);
+  Object.entries(checksByDay)
+    .sort(([leftDay], [rightDay]) => Number(leftDay) - Number(rightDay))
+    .forEach(([day, valuesByField]) => {
+      CHECK_FIELD_ORDER.forEach((fieldKey) => {
+        const value = valuesByField[fieldKey];
+        if (typeof value === "string" && value) {
+          rows.push(["check", day, fieldKey, value]);
+        }
+      });
+    });
+
+  Object.entries(state.maintenanceBottomByDay)
+    .sort(([leftDay], [rightDay]) => Number(leftDay) - Number(rightDay))
+    .forEach(([day, value]) => {
+      if (value) {
+        rows.push(["bottomStamp", day, "", value]);
+      }
+    });
+
+  return rows;
+}
+
+function downloadCsv() {
+  const month = monthEl.value || "month";
+  const vehicle = sanitizeFileNamePart(vehicleEl.value, "vehicle");
+  const driver = sanitizeFileNamePart(driverEl.value, "driver");
+  const csvText = serializeCsv(buildCsvRows());
+  const blob = new Blob(["\uFEFF", csvText], { type: "text/csv;charset=utf-8;" });
+  const downloadUrl = URL.createObjectURL(blob);
+  const linkEl = document.createElement("a");
+
+  linkEl.href = downloadUrl;
+  linkEl.download = `${month}_${vehicle}_${driver}_inspection.csv`;
+  document.body.append(linkEl);
+  linkEl.click();
+  linkEl.remove();
+  URL.revokeObjectURL(downloadUrl);
+
+  setStatus("CSVファイルを保存しました");
+}
+
+function parseImportedCsv(rows) {
+  if (!rows.length) {
+    throw new Error("CSVにデータがありません");
+  }
+
+  const [headerRow, ...dataRows] = rows;
+  const normalizedHeader = headerRow.map((value) => normalizeOptionValue(value));
+  if (normalizedHeader.join(",") !== CSV_HEADER.join(",")) {
+    throw new Error("このCSVは月次日常点検アプリの形式ではありません");
+  }
+
+  const imported = {
+    month: monthEl.value,
+    vehicle: vehicleEl.value.trim(),
+    driver: driverEl.value.trim(),
+    checks: {},
+    operationManager: "",
+    maintenanceManager: "",
+    maintenanceBottomByDay: {},
+    holidayDays: []
+  };
+
+  dataRows.forEach((row) => {
+    const [recordType = "", dayOrKey = "", fieldKey = "", value = ""] = row;
+
+    if (recordType === "meta") {
+      if (dayOrKey === "month" && /^\d{4}-\d{2}$/.test(value)) {
+        imported.month = value;
+      } else if (dayOrKey === "vehicle") {
+        imported.vehicle = value;
+      } else if (dayOrKey === "driver") {
+        imported.driver = value;
+      } else if (dayOrKey === "operationManager") {
+        imported.operationManager = value;
+      } else if (dayOrKey === "maintenanceManager") {
+        imported.maintenanceManager = value;
+      }
+      return;
+    }
+
+    if (recordType === "holiday") {
+      const day = Number(dayOrKey);
+      if (Number.isInteger(day) && day >= 1) {
+        imported.holidayDays.push(day);
+      }
+      return;
+    }
+
+    if (recordType === "bottomStamp") {
+      const day = Number(dayOrKey);
+      if (Number.isInteger(day) && day >= 1 && value) {
+        imported.maintenanceBottomByDay[String(day)] = value;
+      }
+      return;
+    }
+
+    if (recordType === "check") {
+      const day = Number(dayOrKey);
+      const rowIndex = CHECK_FIELD_INDEX[fieldKey];
+      if (Number.isInteger(day) && day >= 1 && Number.isInteger(rowIndex) && value) {
+        imported.checks[checkKey(rowIndex, day)] = value;
+      }
+    }
+  });
+
+  imported.holidayDays = [...new Set(imported.holidayDays)].sort((left, right) => left - right);
+  return imported;
+}
+
+function applyImportedRecord(imported) {
+  resetRecordState();
+
+  if (/^\d{4}-\d{2}$/.test(imported.month)) {
+    monthEl.value = imported.month;
+  }
+
+  ensureSelectValue(vehicleEl, imported.vehicle);
+  ensureSelectValue(driverEl, imported.driver);
+
+  const daysInMonth = getDaysInSelectedMonth();
+  const filteredChecks = {};
+  Object.entries(imported.checks).forEach(([key, value]) => {
+    const [, dayText] = key.split("_");
+    const day = Number(dayText);
+    if (day >= 1 && day <= daysInMonth) {
+      filteredChecks[key] = value;
+    }
+  });
+
+  state.checks = filteredChecks;
+  state.operationManager = imported.operationManager || "";
+  state.maintenanceManager = imported.maintenanceManager || "";
+  state.maintenanceBottomByDay = Object.fromEntries(
+    Object.entries(imported.maintenanceBottomByDay).filter(([dayText, value]) => {
+      const day = Number(dayText);
+      return day >= 1 && day <= daysInMonth && Boolean(value);
+    })
+  );
+  state.holidayDays = imported.holidayDays.filter((day) => day >= 1 && day <= daysInMonth);
+
+  syncHolidayChecks();
+  syncHeaderInfo();
+  renderDays();
+  renderBody();
+  renderBottomStampRow();
+  setStamp("operationManager", state.operationManager);
+  setStamp("maintenanceManager", state.maintenanceManager);
+  syncToolbarWidth();
+}
+
+async function importCsvFile(file) {
+  const text = (await file.text()).replace(/^\uFEFF/, "");
+  const rows = parseCsv(text);
+  const imported = parseImportedCsv(rows);
+  applyImportedRecord(imported);
 }
 
 function getSaveLocationMessage(month, vehicle, driver) {
@@ -712,12 +998,40 @@ document.getElementById("loadBtn").addEventListener("click", () => {
   loadRecord().catch((err) => setStatus(`読込失敗: ${err.message}`, true));
 });
 
+document.getElementById("printBtn").addEventListener("click", () => {
+  printSheet();
+});
+
 document.getElementById("saveBtn").addEventListener("click", () => {
   saveRecord().catch((err) => setStatus(`保存失敗: ${err.message}`, true));
 });
 
 document.getElementById("operationManagerSlot").addEventListener("click", () => toggleStamp("operationManager", "岸田"));
 document.getElementById("maintenanceManagerSlot").addEventListener("click", () => toggleStamp("maintenanceManager", "若本"));
+
+exportCsvBtnEl.addEventListener("click", () => {
+  try {
+    downloadCsv();
+  } catch (error) {
+    setStatus(`CSV保存失敗: ${error.message}`, true);
+  }
+});
+
+importCsvBtnEl.addEventListener("click", () => {
+  csvImportInputEl.value = "";
+  csvImportInputEl.click();
+});
+
+csvImportInputEl.addEventListener("change", (event) => {
+  const [file] = event.target.files || [];
+  if (!file) {
+    return;
+  }
+
+  importCsvFile(file).catch((error) => {
+    setStatus(`CSV読込失敗: ${error.message}`, true);
+  });
+});
 
 syncHeaderInfo();
 renderDays();
