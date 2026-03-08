@@ -263,7 +263,7 @@ th, td {
   }
 
   .content {
-    width: 120px;
+    width: 152px;
     font-size: 8px;
     padding-left: 3px;
   }
@@ -273,19 +273,26 @@ th, td {
   .day,
   .check-cell,
   .bottom-day-cell {
-    width: 16px;
-    min-width: 16px;
-    max-width: 16px;
-    font-size: 7px;
+    width: 14px;
+    min-width: 14px;
+    max-width: 14px;
+    font-size: 6px;
   }
 
-  .day-mark-stack,
   .content-head-inner {
-    grid-template-columns: 1fr 16px;
+    grid-template-columns: 1fr 18px;
+  }
+
+  .day-mark-stack {
+    grid-template-rows: 1fr 1fr;
+    width: 18px;
   }
 
   .day-mark-cell {
+    font-family: "Yu Gothic", "Yu Gothic UI", "Meiryo", sans-serif;
     font-size: 7px;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   .stamp-slot {

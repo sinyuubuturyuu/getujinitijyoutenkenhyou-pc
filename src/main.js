@@ -142,10 +142,13 @@ function normalizeWhitespace(value) {
   return normalizeOptionValue(value).replace(/\s+/g, " ");
 }
 
+function stripDriverReading(value) {
+  return normalizeWhitespace(value).replace(/\s*[（(].*?[）)]\s*/g, "").trim();
+}
+
 function normalizeDriverLookupKey(value) {
-  return normalizeWhitespace(value)
+  return stripDriverReading(value)
     .normalize("NFKC")
-    .replace(/[（(].*?[）)]/g, "")
     .replace(/\s+/g, "")
     .trim();
 }
@@ -155,12 +158,7 @@ function sortOptions(values) {
 }
 
 function getDriverSortKey(value) {
-  const normalizedValue = normalizeOptionValue(value);
-  const readingMatch = normalizedValue.match(/（([^）]+)）/);
-  if (readingMatch) {
-    return readingMatch[1];
-  }
-  return normalizedValue;
+  return stripDriverReading(value);
 }
 
 function sortDriverOptions(values) {
@@ -191,8 +189,11 @@ async function ensureReferenceAuth() {
 }
 
 function setSelectOptions(selectEl, options, placeholder, selectedValue = "") {
-  const normalizedSelectedValue = normalizeOptionValue(selectedValue);
-  const uniqueOptions = [...new Set(options.map((option) => normalizeOptionValue(option)).filter(Boolean))];
+  const normalizeSelectValue = (value) => (
+    selectEl === driverEl ? stripDriverReading(value) : normalizeOptionValue(value)
+  );
+  const normalizedSelectedValue = normalizeSelectValue(selectedValue);
+  const uniqueOptions = [...new Set(options.map((option) => normalizeSelectValue(option)).filter(Boolean))];
 
   if (normalizedSelectedValue && !uniqueOptions.includes(normalizedSelectedValue)) {
     uniqueOptions.unshift(normalizedSelectedValue);
@@ -216,7 +217,9 @@ function setSelectOptions(selectEl, options, placeholder, selectedValue = "") {
 }
 
 function ensureSelectValue(selectEl, value) {
-  const normalizedValue = normalizeOptionValue(value);
+  const normalizedValue = selectEl === driverEl
+    ? stripDriverReading(value)
+    : normalizeOptionValue(value);
   if (!normalizedValue) {
     selectEl.value = "";
     return;
@@ -323,7 +326,7 @@ async function loadReferenceOptions() {
     const vehicleDocExists = vehicleSnapshot.exists();
     const driverDocExists = driverSnapshot.exists();
     const vehicles = vehicleDocExists ? getStringArray(vehicleSnapshot.data()) : [];
-    const drivers = driverDocExists ? getStringArray(driverSnapshot.data()) : [];
+    const drivers = driverDocExists ? getStringArray(driverSnapshot.data()).map((value) => stripDriverReading(value)) : [];
 
     state.vehicleOptions = sortOptions(vehicles);
     state.driverOptions = sortDriverOptions(drivers);
@@ -626,7 +629,7 @@ function syncHeaderInfo() {
   const [, month] = monthEl.value.split("-");
   monthTextEl.textContent = month ? String(Number(month)) : "-";
   vehicleTextEl.textContent = vehicleEl.value.trim() || "-";
-  driverTextEl.textContent = driverEl.value.trim() || "-";
+  driverTextEl.textContent = stripDriverReading(driverEl.value) || "-";
 }
 
 function clearLoadedDocId() {
@@ -661,12 +664,13 @@ function sanitizeFileNamePart(value, fallback) {
 
 function buildCsvRows() {
   syncHolidayChecks();
+  const driver = stripDriverReading(driverEl.value);
 
   const rows = [
     CSV_HEADER,
     ["meta", "month", "", monthEl.value],
     ["meta", "vehicle", "", vehicleEl.value.trim()],
-    ["meta", "driver", "", driverEl.value.trim()],
+    ["meta", "driver", "", driver],
     ["meta", "operationManager", "", state.operationManager],
     ["meta", "maintenanceManager", "", state.maintenanceManager]
   ];
@@ -704,7 +708,7 @@ function buildCsvRows() {
 function downloadCsv() {
   const month = monthEl.value || "month";
   const vehicle = sanitizeFileNamePart(vehicleEl.value, "vehicle");
-  const driver = sanitizeFileNamePart(driverEl.value, "driver");
+  const driver = sanitizeFileNamePart(stripDriverReading(driverEl.value), "driver");
   const csvText = serializeCsv(buildCsvRows());
   const blob = new Blob(["\uFEFF", csvText], { type: "text/csv;charset=utf-8;" });
   const downloadUrl = URL.createObjectURL(blob);
@@ -734,7 +738,7 @@ function parseImportedCsv(rows) {
   const imported = {
     month: monthEl.value,
     vehicle: vehicleEl.value.trim(),
-    driver: driverEl.value.trim(),
+    driver: stripDriverReading(driverEl.value),
     checks: {},
     operationManager: "",
     maintenanceManager: "",
@@ -751,7 +755,7 @@ function parseImportedCsv(rows) {
       } else if (dayOrKey === "vehicle") {
         imported.vehicle = value;
       } else if (dayOrKey === "driver") {
-        imported.driver = value;
+        imported.driver = stripDriverReading(value);
       } else if (dayOrKey === "operationManager") {
         imported.operationManager = value;
       } else if (dayOrKey === "maintenanceManager") {
@@ -920,7 +924,7 @@ async function findRecord(month, vehicle, driver) {
 async function loadRecord() {
   const month = monthEl.value;
   const vehicle = vehicleEl.value.trim();
-  const driver = driverEl.value.trim();
+  const driver = stripDriverReading(driverEl.value);
   if (!vehicle || !driver) {
     setStatus("読込前に車番・運転者を入力してください", true);
     return;
@@ -954,7 +958,7 @@ async function loadRecord() {
 async function saveRecord() {
   const month = monthEl.value;
   const vehicle = vehicleEl.value.trim();
-  const driver = driverEl.value.trim();
+  const driver = stripDriverReading(driverEl.value);
   if (!vehicle || !driver) {
     setStatus("保存前に車番・運転者を入力してください", true);
     return;
