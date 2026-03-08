@@ -114,6 +114,7 @@ const maintenanceHeadEl = document.getElementById("maintenanceHead");
 const driverHeadEl = document.getElementById("driverHead");
 const exportCsvBtnEl = document.getElementById("exportCsvBtn");
 const importCsvBtnEl = document.getElementById("importCsvBtn");
+const helpBtnEl = document.getElementById("helpBtn");
 const csvImportInputEl = document.getElementById("csvImportInput");
 
 const state = {
@@ -565,6 +566,16 @@ function printSheet() {
   window.print();
 }
 
+function showHelp() {
+  window.alert(
+    [
+      "日付を押すと休日の設定になります。もう一度押すと解除できます。",
+      "読込、保存はFirebaseのデータに読込、保存されます。",
+      "印刷はA4横で印刷されます。"
+    ].join("\n")
+  );
+}
+
 function renderBody() {
   bodyEl.innerHTML = "";
   const daysInMonth = getDaysInSelectedMonth();
@@ -1000,6 +1011,10 @@ document.getElementById("loadBtn").addEventListener("click", () => {
 
 document.getElementById("printBtn").addEventListener("click", () => {
   printSheet();
+});
+
+helpBtnEl.addEventListener("click", () => {
+  showHelp();
 });
 
 document.getElementById("saveBtn").addEventListener("click", () => {
