@@ -120,6 +120,17 @@ th, td {
 
 .day-label, .dow-label { width: 30px; background: #eff5fa; }
 .day { width: 30px; font-size: 11px; }
+.holiday-trigger {
+  cursor: pointer;
+  user-select: none;
+}
+.holiday-trigger:hover {
+  background: #eef8ff;
+}
+.day.is-holiday {
+  background: #f7ddd5;
+  color: #8b1e14;
+}
 
 .category {
   width: 120px;

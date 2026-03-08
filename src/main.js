@@ -14,6 +14,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-firestore.js";
 
 const CHECK_STATES = ["", "レ", "☓", "▲"];
+const HOLIDAY_MARK = "休";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDwthcbGvnkb2Q-K7NjX8SMvVdGZCUUDeA",
@@ -282,6 +283,74 @@ function checkKey(itemIndex, day) {
   return `${itemIndex}_${day}`;
 }
 
+function getInspectionItemCount() {
+  return GROUPS.reduce((total, group) => total + group.contents.length, 0);
+}
+
+function isHolidayDay(day) {
+  return state.holidayDays.includes(day);
+}
+
+function setHolidayHeaderState(day, isHoliday) {
+  document.querySelectorAll(`[data-day="${day}"]`).forEach((cell) => {
+    cell.classList.toggle("is-holiday", isHoliday);
+  });
+}
+
+function applyHolidayChecks(day) {
+  for (let itemIndex = 0; itemIndex < getInspectionItemCount(); itemIndex += 1) {
+    const key = checkKey(itemIndex, day);
+    state.checks[key] = HOLIDAY_MARK;
+    const cell = bodyEl.querySelector(`[data-check-key="${key}"]`);
+    if (cell) {
+      cell.textContent = HOLIDAY_MARK;
+    }
+  }
+}
+
+function clearHolidayChecks(day) {
+  for (let itemIndex = 0; itemIndex < getInspectionItemCount(); itemIndex += 1) {
+    const key = checkKey(itemIndex, day);
+    delete state.checks[key];
+    const cell = bodyEl.querySelector(`[data-check-key="${key}"]`);
+    if (cell) {
+      cell.textContent = "";
+    }
+  }
+}
+
+function syncHolidayChecks() {
+  const daysInMonth = getDaysInSelectedMonth();
+  state.holidayDays = [...new Set(state.holidayDays.map((day) => Number(day)))]
+    .filter((day) => Number.isInteger(day) && day >= 1 && day <= daysInMonth)
+    .sort((left, right) => left - right);
+
+  state.holidayDays.forEach((day) => applyHolidayChecks(day));
+}
+
+function markHolidayForDay(day) {
+  if (isHolidayDay(day)) {
+    if (!window.confirm(`${day}日の休日設定を解除しますか？`)) {
+      return;
+    }
+
+    state.holidayDays = state.holidayDays.filter((holidayDay) => holidayDay !== day);
+    clearHolidayChecks(day);
+    setHolidayHeaderState(day, false);
+    setStatus(`${day}日の休日設定を解除しました。保存すると反映されます。`);
+    return;
+  }
+
+  if (!window.confirm(`${day}日を休日にしますか？`)) {
+    return;
+  }
+
+  state.holidayDays = [...state.holidayDays, day].sort((left, right) => left - right);
+  applyHolidayChecks(day);
+  setHolidayHeaderState(day, true);
+  setStatus(`${day}日を休日に設定しました。保存すると反映されます。`);
+}
+
 function rotateCheck(value) {
   const index = CHECK_STATES.indexOf(value);
   return CHECK_STATES[(index + 1) % CHECK_STATES.length];
@@ -364,13 +433,27 @@ function renderDays() {
 
   for (let day = 1; day <= daysInMonth; day += 1) {
     const dateTh = document.createElement("th");
-    dateTh.className = "day";
+    dateTh.className = "day holiday-trigger";
+    dateTh.dataset.day = String(day);
     dateTh.textContent = String(day);
+    dateTh.title = `${day}日を休日に設定`;
+    dateTh.addEventListener("click", () => {
+      markHolidayForDay(day);
+    });
     datesRowEl.append(dateTh);
 
     const dowTh = document.createElement("th");
-    dowTh.className = "day";
+    dowTh.className = "day holiday-trigger";
+    dowTh.dataset.day = String(day);
     dowTh.textContent = toWeekdayLabel(year, month, day);
+    dowTh.title = `${day}日を休日に設定`;
+    dowTh.addEventListener("click", () => {
+      markHolidayForDay(day);
+    });
+    if (isHolidayDay(day)) {
+      dateTh.classList.add("is-holiday");
+      dowTh.classList.add("is-holiday");
+    }
     daysRowEl.append(dowTh);
   }
 }
@@ -409,8 +492,12 @@ function renderBody() {
         const key = checkKey(rowIndex, day);
         const td = document.createElement("td");
         td.className = "check-cell";
-        td.textContent = state.checks[key] || "";
+        td.dataset.checkKey = key;
+        td.textContent = state.checks[key] || (isHolidayDay(day) ? HOLIDAY_MARK : "");
         td.addEventListener("click", () => {
+          if (isHolidayDay(day)) {
+            return;
+          }
           const next = rotateCheck(state.checks[key] || "");
           state.checks[key] = next;
           td.textContent = next;
@@ -547,6 +634,7 @@ async function loadRecord() {
     resetRecordState();
     setStamp("operationManager", "");
     setStamp("maintenanceManager", "");
+    renderDays();
     renderBody();
     renderBottomStampRow();
     setStatus("Firestore に一致データがないため新規入力モードです。");
@@ -559,6 +647,8 @@ async function loadRecord() {
   setStamp("maintenanceManager", record.data.maintenanceManager || "");
   state.maintenanceBottomByDay = record.data.maintenanceBottomByDay || {};
   state.holidayDays = Array.isArray(record.data.holidayDays) ? record.data.holidayDays : [];
+  syncHolidayChecks();
+  renderDays();
   renderBody();
   renderBottomStampRow();
   setStatus("読込完了");
@@ -582,6 +672,7 @@ async function saveRecord() {
 
   const existingRecord = await findRecord(month, vehicle, driver);
   const docId = existingRecord?.id || state.loadedDocId || buildRecordKey(month, vehicle, driver);
+  syncHolidayChecks();
   const payload = {
     month,
     vehicle,
