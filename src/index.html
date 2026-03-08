@@ -11,8 +11,16 @@
     <h1>月次日常点検記録</h1>
     <div id="toolbar" class="toolbar">
       <label>対象月<input type="month" id="month" value="2026-01" /></label>
-      <label>車番<input type="text" id="vehicle" placeholder="例: 品川100あ1234" /></label>
-      <label>運転者<input type="text" id="driver" placeholder="例: 田中" /></label>
+      <label>車番
+        <select id="vehicle" disabled>
+          <option value="">候補を読込中...</option>
+        </select>
+      </label>
+      <label>運転者
+        <select id="driver" disabled>
+          <option value="">候補を読込中...</option>
+        </select>
+      </label>
       <button id="loadBtn" type="button">読込</button>
       <button id="saveBtn" type="button">保存</button>
       <span id="status"></span>

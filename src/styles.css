@@ -34,12 +34,16 @@ body {
   align-items: end;
   width: max-content;
 }
-label { display: grid; gap: 3px; font-size: 12px; font-weight: 600; }
-input {
+label { display: grid; gap: 3px; font-size: 12px; font-weight: 600; min-width: 0; }
+input,
+select {
+  width: 100%;
+  min-width: 0;
   padding: 7px;
   border: 1px solid #a8b6c2;
   border-radius: 6px;
   font-size: 14px;
+  background: #fff;
 }
 button {
   height: 36px;

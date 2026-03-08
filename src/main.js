@@ -1,7 +1,9 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   getFirestore,
   limit,
@@ -23,7 +25,25 @@ const firebaseConfig = {
   measurementId: "G-TDM7LJ221S"
 };
 
+const referenceFirebaseConfig = {
+  apiKey: "AIzaSyAlpiGkwyoEW8U8X7HpK4XiqfwW8e_YOdQ",
+  authDomain: "getujityretenkenhyou.firebaseapp.com",
+  projectId: "getujityretenkenhyou",
+  storageBucket: "getujityretenkenhyou.firebasestorage.app",
+  messagingSenderId: "818371379903",
+  appId: "1:818371379903:web:421a1b390e41a48d2cfc0a",
+  measurementId: "G-CPV1MW7ETR"
+};
+
 const FIRESTORE_COLLECTION = "monthlyInspectionEntries";
+const VEHICLE_SETTINGS_DOC = {
+  collection: "monthly_tire_autosave",
+  id: "monthly_tire_company_settings_backup_vehicles_slot1"
+};
+const DRIVER_SETTINGS_DOC = {
+  collection: "monthly_tire_autosave",
+  id: "monthly_tire_company_settings_backup_drivers_slot1"
+};
 const CHECK_FIELD_ORDER = [
   "brake_pedal",
   "brake_fluid",
@@ -96,11 +116,155 @@ const state = {
   maintenanceManager: "",
   maintenanceBottomByDay: {},
   holidayDays: [],
-  loadedDocId: null
+  loadedDocId: null,
+  vehicleOptions: [],
+  driverOptions: []
 };
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const referenceApp = initializeApp(referenceFirebaseConfig, "reference-app");
+const referenceDb = getFirestore(referenceApp);
+const referenceAuth = getAuth(referenceApp);
+
+function normalizeOptionValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeWhitespace(value) {
+  return normalizeOptionValue(value).replace(/\s+/g, " ");
+}
+
+function normalizeDriverLookupKey(value) {
+  return normalizeWhitespace(value)
+    .normalize("NFKC")
+    .replace(/[（(].*?[）)]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function sortOptions(values) {
+  return [...values].sort((left, right) => left.localeCompare(right, "ja"));
+}
+
+function getDriverSortKey(value) {
+  const normalizedValue = normalizeOptionValue(value);
+  const readingMatch = normalizedValue.match(/（([^）]+)）/);
+  if (readingMatch) {
+    return readingMatch[1];
+  }
+  return normalizedValue;
+}
+
+function sortDriverOptions(values) {
+  return [...values].sort((left, right) => {
+    const leftKey = getDriverSortKey(left);
+    const rightKey = getDriverSortKey(right);
+    return leftKey.localeCompare(rightKey, "ja");
+  });
+}
+
+function getStringArray(source, fieldName = "values") {
+  if (!source || typeof source !== "object" || !Array.isArray(source[fieldName])) {
+    return [];
+  }
+  return source[fieldName].map((value) => normalizeOptionValue(value)).filter(Boolean);
+}
+
+function buildReferenceDocPath(referenceDoc) {
+  return `${referenceDoc.collection}/${referenceDoc.id}`;
+}
+
+async function ensureReferenceAuth() {
+  if (referenceAuth.currentUser) {
+    return referenceAuth.currentUser;
+  }
+  const credential = await signInAnonymously(referenceAuth);
+  return credential.user;
+}
+
+function setSelectOptions(selectEl, options, placeholder, selectedValue = "") {
+  const normalizedSelectedValue = normalizeOptionValue(selectedValue);
+  const uniqueOptions = [...new Set(options.map((option) => normalizeOptionValue(option)).filter(Boolean))];
+
+  if (normalizedSelectedValue && !uniqueOptions.includes(normalizedSelectedValue)) {
+    uniqueOptions.unshift(normalizedSelectedValue);
+  }
+
+  selectEl.innerHTML = "";
+
+  const placeholderOption = document.createElement("option");
+  placeholderOption.value = "";
+  placeholderOption.textContent = placeholder;
+  selectEl.append(placeholderOption);
+
+  uniqueOptions.forEach((optionValue) => {
+    const optionEl = document.createElement("option");
+    optionEl.value = optionValue;
+    optionEl.textContent = optionValue;
+    selectEl.append(optionEl);
+  });
+
+  selectEl.value = normalizedSelectedValue;
+}
+
+async function loadReferenceOptions() {
+  const selectedVehicle = normalizeOptionValue(vehicleEl.value);
+  const selectedDriver = normalizeOptionValue(driverEl.value);
+
+  vehicleEl.disabled = true;
+  driverEl.disabled = true;
+
+  try {
+    await ensureReferenceAuth();
+
+    const [vehicleSnapshot, driverSnapshot] = await Promise.all([
+      getDoc(doc(referenceDb, VEHICLE_SETTINGS_DOC.collection, VEHICLE_SETTINGS_DOC.id)),
+      getDoc(doc(referenceDb, DRIVER_SETTINGS_DOC.collection, DRIVER_SETTINGS_DOC.id))
+    ]);
+
+    const vehicleDocExists = vehicleSnapshot.exists();
+    const driverDocExists = driverSnapshot.exists();
+    const vehicles = vehicleDocExists ? getStringArray(vehicleSnapshot.data()) : [];
+    const drivers = driverDocExists ? getStringArray(driverSnapshot.data()) : [];
+
+    state.vehicleOptions = sortOptions(vehicles);
+    state.driverOptions = sortDriverOptions(drivers);
+
+    setSelectOptions(vehicleEl, state.vehicleOptions, "車番を選択", selectedVehicle);
+    setSelectOptions(driverEl, state.driverOptions, "運転者を選択", selectedDriver);
+
+    vehicleEl.disabled = false;
+    driverEl.disabled = false;
+    syncHeaderInfo();
+
+    if (!vehicleDocExists || !driverDocExists) {
+      setStatus(
+        `候補設定ドキュメント未検出: project=${referenceFirebaseConfig.projectId} vehicle=${buildReferenceDocPath(VEHICLE_SETTINGS_DOC)} exists=${vehicleDocExists} driver=${buildReferenceDocPath(DRIVER_SETTINGS_DOC)} exists=${driverDocExists}`,
+        true
+      );
+      return;
+    }
+
+    if (!state.vehicleOptions.length && !state.driverOptions.length) {
+      setStatus(
+        `候補設定は取得できましたが values が空です: vehicleCount=${vehicles.length} driverCount=${drivers.length}`,
+        true
+      );
+      return;
+    }
+
+    setStatus(
+      `候補一覧を読み込みました: 車番 ${state.vehicleOptions.length}件 / 運転者 ${state.driverOptions.length}件`
+    );
+  } catch (error) {
+    setSelectOptions(vehicleEl, [], "車番を選択");
+    setSelectOptions(driverEl, [], "運転者を選択");
+    vehicleEl.disabled = false;
+    driverEl.disabled = false;
+    setStatus(`候補一覧の取得に失敗しました: ${error.message}`, true);
+  }
+}
 
 function getSelectedYearMonth() {
   const [yearText, monthText] = monthEl.value.split("-");
@@ -320,7 +484,31 @@ async function findRecord(month, vehicle, driver) {
   );
   const snapshot = await getDocs(recordQuery);
   if (snapshot.empty) {
-    return null;
+    const fallbackQuery = query(
+      recordsRef,
+      where("month", "==", month),
+      where("vehicle", "==", vehicle),
+      limit(50)
+    );
+    const fallbackSnapshot = await getDocs(fallbackQuery);
+    if (fallbackSnapshot.empty) {
+      return null;
+    }
+
+    const targetDriverKey = normalizeDriverLookupKey(driver);
+    const matchedDoc = fallbackSnapshot.docs.find((recordDoc) => {
+      const recordDriver = recordDoc.data().driver || "";
+      return normalizeDriverLookupKey(recordDriver) === targetDriverKey;
+    });
+
+    if (!matchedDoc) {
+      return null;
+    }
+
+    return {
+      id: matchedDoc.id,
+      data: matchedDoc.data()
+    };
   }
   const recordDoc = snapshot.docs[0];
   return {
@@ -403,11 +591,11 @@ monthEl.addEventListener("change", () => {
   renderBottomStampRow();
   syncToolbarWidth();
 });
-vehicleEl.addEventListener("input", () => {
+vehicleEl.addEventListener("change", () => {
   clearLoadedDocId();
   syncHeaderInfo();
 });
-driverEl.addEventListener("input", () => {
+driverEl.addEventListener("change", () => {
   clearLoadedDocId();
   syncHeaderInfo();
 });
@@ -429,4 +617,4 @@ renderDays();
 renderBody();
 renderBottomStampRow();
 syncToolbarWidth();
-statusEl.textContent = "";
+loadReferenceOptions().catch((err) => setStatus(`候補一覧の取得に失敗しました: ${err.message}`, true));
