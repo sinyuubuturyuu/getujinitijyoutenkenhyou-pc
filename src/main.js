@@ -303,11 +303,27 @@ function setStamp(target, value) {
 }
 
 function setBottomStampByDay(day, value) {
-  state.maintenanceBottomByDay[String(day)] = value;
+  const dayKey = String(day);
+  if (value) {
+    state.maintenanceBottomByDay[dayKey] = value;
+  } else {
+    delete state.maintenanceBottomByDay[dayKey];
+  }
   const cell = maintenanceFooterRowEl.querySelector(`[data-bottom-day="${day}"]`);
   if (cell) {
     cell.innerHTML = createHanko(value, "small");
   }
+}
+
+function toggleStamp(target, value) {
+  const nextValue = state[target] === value ? "" : value;
+  setStamp(target, nextValue);
+}
+
+function toggleBottomStampByDay(day, value) {
+  const dayKey = String(day);
+  const nextValue = state.maintenanceBottomByDay[dayKey] === value ? "" : value;
+  setBottomStampByDay(day, nextValue);
 }
 
 function renderBottomStampRow() {
@@ -319,7 +335,7 @@ function renderBottomStampRow() {
     cell.dataset.bottomDay = String(day);
     cell.innerHTML = createHanko(state.maintenanceBottomByDay[String(day)] || "", "small");
     cell.addEventListener("click", () => {
-      setBottomStampByDay(day, "若本");
+      toggleBottomStampByDay(day, "若本");
     });
     maintenanceFooterRowEl.append(cell);
   }
@@ -609,8 +625,8 @@ document.getElementById("saveBtn").addEventListener("click", () => {
   saveRecord().catch((err) => setStatus(`保存失敗: ${err.message}`, true));
 });
 
-document.getElementById("operationManagerSlot").addEventListener("click", () => setStamp("operationManager", "岸田"));
-document.getElementById("maintenanceManagerSlot").addEventListener("click", () => setStamp("maintenanceManager", "若本"));
+document.getElementById("operationManagerSlot").addEventListener("click", () => toggleStamp("operationManager", "岸田"));
+document.getElementById("maintenanceManagerSlot").addEventListener("click", () => toggleStamp("maintenanceManager", "若本"));
 
 syncHeaderInfo();
 renderDays();
