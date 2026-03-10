@@ -127,7 +127,8 @@ th, td {
 .holiday-trigger:hover {
   background: #eef8ff;
 }
-.day.is-holiday {
+.day.is-holiday,
+.check-cell.is-holiday {
   background: #f7ddd5;
   color: #8b1e14;
 }
@@ -150,6 +151,7 @@ th, td {
   user-select: none;
 }
 .check-cell:hover { background: #eef8ff; }
+.check-cell.is-holiday:hover { background: #f7ddd5; }
 
 .stamp-slot {
   background: #fff;
@@ -214,6 +216,8 @@ th, td {
   body {
     background: #fff;
     color: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .app-header {

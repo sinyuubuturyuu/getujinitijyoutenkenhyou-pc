@@ -396,14 +396,20 @@ function setHolidayHeaderState(day, isHoliday) {
   });
 }
 
+function setCheckCellState(cell, value, isHoliday) {
+  if (!cell) {
+    return;
+  }
+  cell.textContent = value;
+  cell.classList.toggle("is-holiday", isHoliday);
+}
+
 function applyHolidayChecks(day) {
   for (let itemIndex = 0; itemIndex < getInspectionItemCount(); itemIndex += 1) {
     const key = checkKey(itemIndex, day);
     state.checks[key] = HOLIDAY_MARK;
     const cell = bodyEl.querySelector(`[data-check-key="${key}"]`);
-    if (cell) {
-      cell.textContent = HOLIDAY_MARK;
-    }
+    setCheckCellState(cell, "", true);
   }
 }
 
@@ -412,18 +418,44 @@ function clearHolidayChecks(day) {
     const key = checkKey(itemIndex, day);
     delete state.checks[key];
     const cell = bodyEl.querySelector(`[data-check-key="${key}"]`);
-    if (cell) {
-      cell.textContent = "";
-    }
+    setCheckCellState(cell, "", false);
   }
 }
 
-function syncHolidayChecks() {
+function inferHolidayDaysFromChecks(checks) {
   const daysInMonth = getDaysInSelectedMonth();
-  state.holidayDays = [...new Set(state.holidayDays.map((day) => Number(day)))]
-    .filter((day) => Number.isInteger(day) && day >= 1 && day <= daysInMonth)
-    .sort((left, right) => left - right);
+  const itemCount = getInspectionItemCount();
+  const inferredDays = [];
 
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    let hasHolidayMark = false;
+    let allHoliday = true;
+
+    for (let itemIndex = 0; itemIndex < itemCount; itemIndex += 1) {
+      const value = checks[checkKey(itemIndex, day)];
+      if (value !== HOLIDAY_MARK) {
+        allHoliday = false;
+        break;
+      }
+      hasHolidayMark = true;
+    }
+
+    if (allHoliday && hasHolidayMark) {
+      inferredDays.push(day);
+    }
+  }
+
+  return inferredDays;
+}
+
+function mergeHolidayDays(days, checks = state.checks) {
+  return [...new Set([...(days || []), ...inferHolidayDaysFromChecks(checks)].map((day) => Number(day)))]
+    .filter((day) => Number.isInteger(day) && day >= 1 && day <= getDaysInSelectedMonth())
+    .sort((left, right) => left - right);
+}
+
+function syncHolidayChecks() {
+  state.holidayDays = mergeHolidayDays(state.holidayDays, state.checks);
   state.holidayDays.forEach((day) => applyHolidayChecks(day));
 }
 
@@ -607,14 +639,16 @@ function renderBody() {
         const td = document.createElement("td");
         td.className = "check-cell";
         td.dataset.checkKey = key;
-        td.textContent = state.checks[key] || (isHolidayDay(day) ? HOLIDAY_MARK : "");
+        const isHoliday = isHolidayDay(day);
+        const displayValue = isHoliday ? "" : (state.checks[key] || "");
+        setCheckCellState(td, displayValue, isHoliday);
         td.addEventListener("click", () => {
           if (isHolidayDay(day)) {
             return;
           }
           const next = rotateCheck(state.checks[key] || "");
           state.checks[key] = next;
-          td.textContent = next;
+          setCheckCellState(td, next, false);
         });
         tr.append(td);
       }
@@ -789,7 +823,7 @@ function parseImportedCsv(rows) {
     }
   });
 
-  imported.holidayDays = [...new Set(imported.holidayDays)].sort((left, right) => left - right);
+  imported.holidayDays = mergeHolidayDays(imported.holidayDays, imported.checks);
   return imported;
 }
 
@@ -822,7 +856,7 @@ function applyImportedRecord(imported) {
       return day >= 1 && day <= daysInMonth && Boolean(value);
     })
   );
-  state.holidayDays = imported.holidayDays.filter((day) => day >= 1 && day <= daysInMonth);
+  state.holidayDays = mergeHolidayDays(imported.holidayDays, state.checks).filter((day) => day >= 1 && day <= daysInMonth);
 
   syncHolidayChecks();
   syncHeaderInfo();
@@ -947,7 +981,7 @@ async function loadRecord() {
   setStamp("operationManager", record.data.operationManager || "");
   setStamp("maintenanceManager", record.data.maintenanceManager || "");
   state.maintenanceBottomByDay = record.data.maintenanceBottomByDay || {};
-  state.holidayDays = Array.isArray(record.data.holidayDays) ? record.data.holidayDays : [];
+  state.holidayDays = mergeHolidayDays(Array.isArray(record.data.holidayDays) ? record.data.holidayDays : [], state.checks);
   syncHolidayChecks();
   renderDays();
   renderBody();
