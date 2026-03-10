@@ -125,7 +125,8 @@ const state = {
   holidayDays: [],
   loadedDocId: null,
   vehicleOptions: [],
-  driverOptions: []
+  driverOptions: [],
+  driverStorageMap: {}
 };
 
 const app = initializeApp(firebaseConfig);
@@ -151,6 +152,39 @@ function normalizeDriverLookupKey(value) {
     .normalize("NFKC")
     .replace(/\s+/g, "")
     .trim();
+}
+
+function rememberDriverStorageValue(value) {
+  const rawValue = normalizeOptionValue(value);
+  const normalizedValue = stripDriverReading(rawValue);
+  if (!normalizedValue) {
+    return;
+  }
+
+  const existingValue = state.driverStorageMap[normalizedValue];
+  if (!existingValue || existingValue === normalizedValue || rawValue !== normalizedValue) {
+    state.driverStorageMap[normalizedValue] = rawValue || normalizedValue;
+  }
+}
+
+function getSelectedDriverStorageValue(value = driverEl.value) {
+  const normalizedValue = stripDriverReading(value);
+  if (!normalizedValue) {
+    return "";
+  }
+  return state.driverStorageMap[normalizedValue] || normalizedValue;
+}
+
+function getDriverIdentity(value = driverEl.value) {
+  const storageValue = getSelectedDriverStorageValue(value);
+  const displayValue = stripDriverReading(value || storageValue);
+  const aliases = [...new Set([storageValue, displayValue].map((item) => normalizeOptionValue(item)).filter(Boolean))];
+  return {
+    storageValue,
+    displayValue,
+    aliases,
+    normalizedKey: normalizeDriverLookupKey(storageValue || displayValue)
+  };
 }
 
 function sortOptions(values) {
@@ -326,7 +360,9 @@ async function loadReferenceOptions() {
     const vehicleDocExists = vehicleSnapshot.exists();
     const driverDocExists = driverSnapshot.exists();
     const vehicles = vehicleDocExists ? getStringArray(vehicleSnapshot.data()) : [];
-    const drivers = driverDocExists ? getStringArray(driverSnapshot.data()).map((value) => stripDriverReading(value)) : [];
+    const rawDrivers = driverDocExists ? getStringArray(driverSnapshot.data()) : [];
+    rawDrivers.forEach((value) => rememberDriverStorageValue(value));
+    const drivers = rawDrivers.map((value) => stripDriverReading(value));
 
     state.vehicleOptions = sortOptions(vehicles);
     state.driverOptions = sortDriverOptions(drivers);
@@ -452,6 +488,41 @@ function mergeHolidayDays(days, checks = state.checks) {
   return [...new Set([...(days || []), ...inferHolidayDaysFromChecks(checks)].map((day) => Number(day)))]
     .filter((day) => Number.isInteger(day) && day >= 1 && day <= getDaysInSelectedMonth())
     .sort((left, right) => left - right);
+}
+
+function buildHolidayPayload(days = state.holidayDays, checks = state.checks) {
+  const normalizedDays = mergeHolidayDays(days, checks);
+  const dayEntries = normalizedDays.map((day) => [String(day), true]);
+  return {
+    holidayDays: normalizedDays,
+    holidays: normalizedDays.map((day) => String(day)),
+    holidayFlagsByDay: Object.fromEntries(dayEntries),
+    isHolidayByDay: Object.fromEntries(dayEntries)
+  };
+}
+
+function extractHolidayDays(recordData = {}, checks = {}) {
+  const collectedDays = [];
+
+  if (Array.isArray(recordData.holidayDays)) {
+    collectedDays.push(...recordData.holidayDays);
+  }
+  if (Array.isArray(recordData.holidays)) {
+    collectedDays.push(...recordData.holidays);
+  }
+
+  [recordData.holidayFlagsByDay, recordData.isHolidayByDay].forEach((mapValue) => {
+    if (!mapValue || typeof mapValue !== "object") {
+      return;
+    }
+    Object.entries(mapValue).forEach(([dayText, enabled]) => {
+      if (enabled) {
+        collectedDays.push(dayText);
+      }
+    });
+  });
+
+  return mergeHolidayDays(collectedDays, checks);
 }
 
 function syncHolidayChecks() {
@@ -698,13 +769,14 @@ function sanitizeFileNamePart(value, fallback) {
 
 function buildCsvRows() {
   syncHolidayChecks();
-  const driver = stripDriverReading(driverEl.value);
+  const driverIdentity = getDriverIdentity();
 
   const rows = [
     CSV_HEADER,
     ["meta", "month", "", monthEl.value],
     ["meta", "vehicle", "", vehicleEl.value.trim()],
-    ["meta", "driver", "", driver],
+    ["meta", "driver", "", driverIdentity.storageValue],
+    ["meta", "driverDisplay", "", driverIdentity.displayValue],
     ["meta", "operationManager", "", state.operationManager],
     ["meta", "maintenanceManager", "", state.maintenanceManager]
   ];
@@ -772,7 +844,7 @@ function parseImportedCsv(rows) {
   const imported = {
     month: monthEl.value,
     vehicle: vehicleEl.value.trim(),
-    driver: stripDriverReading(driverEl.value),
+    driver: getDriverIdentity().storageValue,
     checks: {},
     operationManager: "",
     maintenanceManager: "",
@@ -789,7 +861,9 @@ function parseImportedCsv(rows) {
       } else if (dayOrKey === "vehicle") {
         imported.vehicle = value;
       } else if (dayOrKey === "driver") {
-        imported.driver = stripDriverReading(value);
+        imported.driver = normalizeOptionValue(value);
+      } else if (dayOrKey === "driverDisplay" && !imported.driver) {
+        imported.driver = normalizeOptionValue(value);
       } else if (dayOrKey === "operationManager") {
         imported.operationManager = value;
       } else if (dayOrKey === "maintenanceManager") {
@@ -834,6 +908,7 @@ function applyImportedRecord(imported) {
     monthEl.value = imported.month;
   }
 
+  rememberDriverStorageValue(imported.driver);
   ensureSelectValue(vehicleEl, imported.vehicle);
   ensureSelectValue(driverEl, imported.driver);
 
@@ -935,8 +1010,14 @@ async function findRecord(month, vehicle, driver) {
 
     const targetDriverKey = normalizeDriverLookupKey(driver);
     const matchedDoc = fallbackSnapshot.docs.find((recordDoc) => {
-      const recordDriver = recordDoc.data().driver || "";
-      return normalizeDriverLookupKey(recordDriver) === targetDriverKey;
+      const recordData = recordDoc.data();
+      const candidateValues = [
+        recordData.driver,
+        recordData.driverRaw,
+        recordData.driverDisplay,
+        ...(Array.isArray(recordData.driverAliases) ? recordData.driverAliases : [])
+      ];
+      return candidateValues.some((candidate) => normalizeDriverLookupKey(candidate || "") === targetDriverKey);
     });
 
     if (!matchedDoc) {
@@ -958,7 +1039,7 @@ async function findRecord(month, vehicle, driver) {
 async function loadRecord() {
   const month = monthEl.value;
   const vehicle = vehicleEl.value.trim();
-  const driver = stripDriverReading(driverEl.value);
+  const driver = getDriverIdentity().storageValue;
   if (!vehicle || !driver) {
     setStatus("読込前に車番・運転者を入力してください", true);
     return;
@@ -978,10 +1059,11 @@ async function loadRecord() {
 
   state.loadedDocId = record.id;
   state.checks = fromFirestoreChecksByDay(record.data.checksByDay);
+  rememberDriverStorageValue(record.data.driver || "");
   setStamp("operationManager", record.data.operationManager || "");
   setStamp("maintenanceManager", record.data.maintenanceManager || "");
   state.maintenanceBottomByDay = record.data.maintenanceBottomByDay || {};
-  state.holidayDays = mergeHolidayDays(Array.isArray(record.data.holidayDays) ? record.data.holidayDays : [], state.checks);
+  state.holidayDays = extractHolidayDays(record.data, state.checks);
   syncHolidayChecks();
   renderDays();
   renderBody();
@@ -992,7 +1074,8 @@ async function loadRecord() {
 async function saveRecord() {
   const month = monthEl.value;
   const vehicle = vehicleEl.value.trim();
-  const driver = stripDriverReading(driverEl.value);
+  const driverIdentity = getDriverIdentity();
+  const driver = driverIdentity.storageValue;
   if (!vehicle || !driver) {
     setStatus("保存前に車番・運転者を入力してください", true);
     return;
@@ -1006,22 +1089,35 @@ async function saveRecord() {
   }
 
   const existingRecord = await findRecord(month, vehicle, driver);
-  const docId = existingRecord?.id || state.loadedDocId || buildRecordKey(month, vehicle, driver);
   syncHolidayChecks();
-  const payload = {
+  const holidayPayload = buildHolidayPayload(state.holidayDays, state.checks);
+  const rawDocId = buildRecordKey(month, vehicle, driverIdentity.storageValue);
+  const displayDocId = buildRecordKey(month, vehicle, driverIdentity.displayValue);
+  const docIds = [...new Set([existingRecord?.id, state.loadedDocId, rawDocId, displayDocId].filter(Boolean))];
+  const basePayload = {
     month,
     vehicle,
     driver,
+    driverRaw: driverIdentity.storageValue,
+    driverDisplay: driverIdentity.displayValue,
+    driverAliases: driverIdentity.aliases,
+    driverNormalized: driverIdentity.normalizedKey,
     checksByDay: toFirestoreChecksByDay(state.checks),
     operationManager: state.operationManager,
     maintenanceManager: state.maintenanceManager,
     maintenanceBottomByDay: state.maintenanceBottomByDay,
-    holidayDays: state.holidayDays,
+    ...holidayPayload,
     updatedAt: serverTimestamp()
   };
 
-  await setDoc(doc(db, FIRESTORE_COLLECTION, docId), payload, { merge: true });
-  state.loadedDocId = docId;
+  await Promise.all(docIds.map((docId) => {
+    const payload = {
+      ...basePayload,
+      driver: docId === displayDocId ? driverIdentity.displayValue : driverIdentity.storageValue
+    };
+    return setDoc(doc(db, FIRESTORE_COLLECTION, docId), payload);
+  }));
+  state.loadedDocId = rawDocId;
   setStatus("保存完了");
 }
 
