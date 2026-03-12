@@ -15,6 +15,36 @@ import {
 
 const CHECK_STATES = ["", "レ", "☓", "▲"];
 const HOLIDAY_MARK = "休";
+const EXCEL_TEMPLATE_FILE_NAME = "月次日常点検 2026.xlsx";
+const EXCEL_TEMPLATE_ASSET_FILE_NAME = "monthly-inspection-template.xlsx";
+const EXCEL_TEMPLATE_API_PATH = "/api/excel-template";
+const EXCEL_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const EXCEL_TEMPLATE_SHEET_NAME = "日常点検記録表原本";
+const EXCEL_MONTH_SHEET_NAMES = {
+  1: "日常点検記録表1月",
+  2: "日常点検記録表2月",
+  3: "日常点検記録表3月"
+};
+const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+const EXCEL_SHEET_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const EXCEL_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PACKAGE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships";
+const EXCEL_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types";
+const EXCEL_DRAWING_NAMESPACE = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
+const EXCEL_DRAWING_MAIN_NAMESPACE = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const EXCEL_DAY_COLUMNS = Array.from({ length: 31 }, (_, index) => columnNumberToLabel(index + 10));
+const EXCEL_WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
+const EXCEL_CHECK_START_ROW = 7;
+const EXCEL_BOTTOM_STAMP_ROW = 29;
+const EXCEL_IMAGE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+const EXCEL_DRAWING_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
+const EXCEL_PNG_CONTENT_TYPE = "image/png";
+const EXCEL_EMUS_PER_PIXEL = 9525;
+const EXCEL_STAMP_IMAGE_SIZES = {
+  large: { width: 54, height: 54 },
+  small: { width: 22, height: 22 }
+};
+let jsZipModulePromise = null;
 
 const firebaseConfig = {
   apiKey: "AIzaSyDwthcbGvnkb2Q-K7NjX8SMvVdGZCUUDeA",
@@ -112,6 +142,7 @@ const titleHeadEl = document.getElementById("titleHead");
 const operationHeadEl = document.getElementById("operationHead");
 const maintenanceHeadEl = document.getElementById("maintenanceHead");
 const driverHeadEl = document.getElementById("driverHead");
+const exportExcelBtnEl = document.getElementById("exportExcelBtn");
 const exportCsvBtnEl = document.getElementById("exportCsvBtn");
 const importCsvBtnEl = document.getElementById("importCsvBtn");
 const helpBtnEl = document.getElementById("helpBtn");
@@ -128,6 +159,23 @@ const state = {
   driverOptions: [],
   driverStorageMap: {}
 };
+
+function columnNumberToLabel(columnNumber) {
+  let value = columnNumber;
+  let label = "";
+
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+
+  return label;
+}
+
+function getReiwaYear(year) {
+  return year >= 2019 ? year - 2018 : year;
+}
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -558,6 +606,73 @@ function rotateCheck(value) {
   return CHECK_STATES[(index + 1) % CHECK_STATES.length];
 }
 
+function escapeXmlText(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildHankoSvgMarkup(name, size = "small") {
+  const trimmedName = String(name || "").trim();
+  if (!trimmedName) {
+    return "";
+  }
+
+  const { width, height } = EXCEL_STAMP_IMAGE_SIZES[size] || EXCEL_STAMP_IMAGE_SIZES.small;
+  const fontSize = size === "large" ? 22 : 14;
+  const strokeWidth = size === "large" ? 4 : 3;
+  const inset = strokeWidth;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <circle cx="${width / 2}" cy="${height / 2}" r="${(Math.min(width, height) / 2) - inset}" fill="rgba(255,255,255,0.18)" stroke="#c61717" stroke-width="${strokeWidth}" />
+  <text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" fill="#c61717" font-size="${fontSize}" font-weight="700" font-family="'Yu Gothic', 'Hiragino Kaku Gothic ProN', sans-serif" letter-spacing="1">${escapeXmlText(trimmedName)}</text>
+</svg>`;
+}
+
+async function renderSvgToPngArrayBuffer(svgMarkup, width, height) {
+  const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const nextImage = new Image();
+      nextImage.onload = () => resolve(nextImage);
+      nextImage.onerror = () => reject(new Error("印画像の描画に失敗しました"));
+      nextImage.src = objectUrl;
+    });
+
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("印画像の描画コンテキストを取得できませんでした");
+    }
+
+    context.scale(scale, scale);
+    context.drawImage(image, 0, 0, width, height);
+
+    const pngBlob = await new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+          return;
+        }
+        reject(new Error("印画像の PNG 変換に失敗しました"));
+      }, EXCEL_PNG_CONTENT_TYPE);
+    });
+
+    return await pngBlob.arrayBuffer();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 function createHanko(name, size = "small") {
   if (!name) return "";
   return `<div class="hanko hanko-${size}"><span>${name}</span></div>`;
@@ -767,6 +882,740 @@ function sanitizeFileNamePart(value, fallback) {
   return normalizedValue.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_");
 }
 
+function downloadBlob(blob, fileName) {
+  const downloadUrl = URL.createObjectURL(blob);
+  const linkEl = document.createElement("a");
+
+  linkEl.href = downloadUrl;
+  linkEl.download = fileName;
+  document.body.append(linkEl);
+  linkEl.click();
+  linkEl.remove();
+  URL.revokeObjectURL(downloadUrl);
+}
+
+function buildExcelFileName() {
+  const month = monthEl.value || "month";
+  const vehicle = sanitizeFileNamePart(vehicleEl.value, "vehicle");
+  const driver = sanitizeFileNamePart(stripDriverReading(driverEl.value), "driver");
+  return `月次日常点検_${month}_${vehicle}_${driver}.xlsx`;
+}
+
+async function getJsZipModule() {
+  if (!jsZipModulePromise) {
+    jsZipModulePromise = import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm")
+      .then((module) => module.default);
+  }
+  return jsZipModulePromise;
+}
+
+function getExcelTemplateUrlCandidates() {
+  return [...new Set([
+    new URL(`./assets/${EXCEL_TEMPLATE_ASSET_FILE_NAME}`, import.meta.url).href,
+    EXCEL_TEMPLATE_API_PATH,
+    new URL(`../${EXCEL_TEMPLATE_FILE_NAME}`, import.meta.url).href
+  ])];
+}
+
+async function fetchExcelTemplateArrayBuffer() {
+  const failures = [];
+
+  for (const templateUrl of getExcelTemplateUrlCandidates()) {
+    try {
+      const response = await fetch(templateUrl, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return await response.arrayBuffer();
+    } catch (error) {
+      failures.push(`${templateUrl}: ${error.message}`);
+    }
+  }
+
+  throw new Error(`Excelテンプレートを取得できませんでした: ${failures.join(" / ")}`);
+}
+
+function parseXmlDocument(xmlText) {
+  const xmlDoc = new DOMParser().parseFromString(xmlText, "application/xml");
+  if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
+    throw new Error("ExcelテンプレートのXML解析に失敗しました");
+  }
+  return xmlDoc;
+}
+
+function serializeXmlDocument(xmlDoc) {
+  const xmlText = new XMLSerializer().serializeToString(xmlDoc);
+  return xmlText.startsWith("<?xml")
+    ? xmlText
+    : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xmlText}`;
+}
+
+function getZipDirectoryPath(filePath) {
+  return filePath.slice(0, filePath.lastIndexOf("/"));
+}
+
+function getZipBaseName(filePath) {
+  return filePath.slice(filePath.lastIndexOf("/") + 1);
+}
+
+function resolveZipPath(fromPath, targetPath) {
+  const baseParts = getZipDirectoryPath(fromPath).split("/").filter(Boolean);
+  const targetParts = targetPath.split("/").filter(Boolean);
+
+  if (targetPath.startsWith("/")) {
+    return targetParts.join("/");
+  }
+
+  const resolvedParts = [...baseParts];
+  targetParts.forEach((part) => {
+    if (!part || part === ".") {
+      return;
+    }
+    if (part === "..") {
+      resolvedParts.pop();
+      return;
+    }
+    resolvedParts.push(part);
+  });
+
+  return resolvedParts.join("/");
+}
+
+function createRelationshipsDocument() {
+  return parseXmlDocument(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<Relationships xmlns="${PACKAGE_RELATIONSHIP_NAMESPACE}"></Relationships>`
+  );
+}
+
+function clearElementChildren(element) {
+  while (element.firstChild) {
+    element.removeChild(element.firstChild);
+  }
+}
+
+function ensureContentTypeDefault(contentTypesDoc, extension, contentType) {
+  const existing = Array.from(contentTypesDoc.getElementsByTagNameNS(EXCEL_CONTENT_TYPES_NAMESPACE, "Default"))
+    .find((node) => (node.getAttribute("Extension") || "").toLowerCase() === extension.toLowerCase());
+  if (existing) {
+    existing.setAttribute("ContentType", contentType);
+    return;
+  }
+
+  const root = contentTypesDoc.documentElement;
+  const defaultNode = contentTypesDoc.createElementNS(EXCEL_CONTENT_TYPES_NAMESPACE, "Default");
+  defaultNode.setAttribute("Extension", extension);
+  defaultNode.setAttribute("ContentType", contentType);
+  root.append(defaultNode);
+}
+
+function getNextWorkbookMediaIndex(workbook) {
+  const mediaNames = Object.keys(workbook.files).filter((filePath) => /^xl\/media\/stamp-\d+\.png$/.test(filePath));
+  if (!mediaNames.length) {
+    return 1;
+  }
+
+  return Math.max(...mediaNames.map((filePath) => Number(filePath.match(/stamp-(\d+)\.png$/)?.[1] || 0))) + 1;
+}
+
+async function createExcelStampMediaStore(workbook, contentTypesDoc) {
+  const mediaCache = new Map();
+  let nextMediaIndex = getNextWorkbookMediaIndex(workbook);
+
+  ensureContentTypeDefault(contentTypesDoc, "png", EXCEL_PNG_CONTENT_TYPE);
+
+  return {
+    async getStampImage(name, size) {
+      const trimmedName = String(name || "").trim();
+      if (!trimmedName) {
+        return null;
+      }
+
+      const cacheKey = `${size}:${trimmedName}`;
+      if (!mediaCache.has(cacheKey)) {
+        mediaCache.set(cacheKey, (async () => {
+          const dimensions = EXCEL_STAMP_IMAGE_SIZES[size] || EXCEL_STAMP_IMAGE_SIZES.small;
+          const svgMarkup = buildHankoSvgMarkup(trimmedName, size);
+          const imageBuffer = await renderSvgToPngArrayBuffer(svgMarkup, dimensions.width, dimensions.height);
+          const mediaPath = `xl/media/stamp-${nextMediaIndex}.png`;
+          nextMediaIndex += 1;
+          workbook.file(mediaPath, imageBuffer);
+          return {
+            mediaPath,
+            ...dimensions
+          };
+        })());
+      }
+
+      return mediaCache.get(cacheKey);
+    }
+  };
+}
+
+function columnLabelToNumber(columnLabel) {
+  return columnLabel.split("").reduce((total, char) => (total * 26) + (char.charCodeAt(0) - 64), 0);
+}
+
+function parseCellReference(cellRef) {
+  const match = /^([A-Z]+)(\d+)$/.exec(cellRef);
+  if (!match) {
+    throw new Error(`不正なセル参照です: ${cellRef}`);
+  }
+
+  const [, columnLabel, rowText] = match;
+  return {
+    columnLabel,
+    columnNumber: columnLabelToNumber(columnLabel),
+    rowNumber: Number(rowText)
+  };
+}
+
+function getWorkbookSheetTarget(workbookDoc, workbookRelsDoc, sheetName) {
+  const sheets = Array.from(workbookDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "sheet"));
+  const targetSheet = sheets.find((sheet) => sheet.getAttribute("name") === sheetName);
+  if (!targetSheet) {
+    return null;
+  }
+
+  const relationshipId = targetSheet.getAttributeNS(EXCEL_RELATIONSHIP_NAMESPACE, "id") || targetSheet.getAttribute("r:id");
+  const relationships = Array.from(
+    workbookRelsDoc.getElementsByTagNameNS("http://schemas.openxmlformats.org/package/2006/relationships", "Relationship")
+  );
+  const relationship = relationships.find((item) => item.getAttribute("Id") === relationshipId);
+  if (!relationship) {
+    return null;
+  }
+
+  const targetPath = relationship.getAttribute("Target") || "";
+  return {
+    sheet: targetSheet,
+    index: sheets.indexOf(targetSheet),
+    path: targetPath.startsWith("/")
+      ? targetPath.replace(/^\//, "")
+      : `xl/${targetPath.replace(/^xl\//, "")}`
+  };
+}
+
+function resolveExcelSheetTarget(workbookDoc, workbookRelsDoc, month) {
+  const preferredSheetName = EXCEL_MONTH_SHEET_NAMES[month] || EXCEL_TEMPLATE_SHEET_NAME;
+  return getWorkbookSheetTarget(workbookDoc, workbookRelsDoc, preferredSheetName)
+    || getWorkbookSheetTarget(workbookDoc, workbookRelsDoc, EXCEL_TEMPLATE_SHEET_NAME);
+}
+
+function getInspectionSheetTargets(workbookDoc, workbookRelsDoc) {
+  const sheets = Array.from(workbookDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "sheet"));
+  return sheets
+    .map((sheet) => getWorkbookSheetTarget(workbookDoc, workbookRelsDoc, sheet.getAttribute("name")))
+    .filter((target) => target && /^日常点検記録表/.test(target.sheet.getAttribute("name")));
+}
+
+function getElementChildren(parentNode, localName) {
+  return Array.from(parentNode.childNodes).filter((child) => (
+    child.nodeType === Node.ELEMENT_NODE && (!localName || child.localName === localName)
+  ));
+}
+
+function buildStyleSignature(xfNode) {
+  return Array.from(xfNode.attributes)
+    .map((attribute) => [attribute.name, attribute.value])
+    .filter(([name]) => name !== "fillId" && name !== "applyFill")
+    .sort(([leftName], [rightName]) => leftName.localeCompare(rightName))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("|");
+}
+
+function buildStyleFillVariantMap(stylesDoc) {
+  const cellXfs = stylesDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "cellXfs")[0];
+  if (!cellXfs) {
+    return new Map();
+  }
+
+  const xfNodes = getElementChildren(cellXfs, "xf");
+  const styleIndexByFillAndSignature = new Map();
+
+  xfNodes.forEach((xfNode, styleIndex) => {
+    const signature = buildStyleSignature(xfNode);
+    const fillId = xfNode.getAttribute("fillId") || "0";
+    styleIndexByFillAndSignature.set(`${fillId}::${signature}`, styleIndex);
+  });
+
+  const ensureStyleVariant = (xfNode, fillId) => {
+    const signature = buildStyleSignature(xfNode);
+    const variantKey = `${fillId}::${signature}`;
+    const existingStyleIndex = styleIndexByFillAndSignature.get(variantKey);
+    if (Number.isInteger(existingStyleIndex)) {
+      return existingStyleIndex;
+    }
+
+    const clonedXfNode = xfNode.cloneNode(true);
+    clonedXfNode.setAttribute("fillId", fillId);
+    if (fillId === "0") {
+      clonedXfNode.removeAttribute("applyFill");
+    } else {
+      clonedXfNode.setAttribute("applyFill", "1");
+    }
+
+    cellXfs.append(clonedXfNode);
+    const styleIndex = getElementChildren(cellXfs, "xf").length - 1;
+    cellXfs.setAttribute("count", String(styleIndex + 1));
+    styleIndexByFillAndSignature.set(variantKey, styleIndex);
+    return styleIndex;
+  };
+
+  const variantMap = new Map();
+  xfNodes.forEach((xfNode, styleIndex) => {
+    variantMap.set(styleIndex, {
+      normal: ensureStyleVariant(xfNode, "0"),
+      holiday: ensureStyleVariant(xfNode, "2"),
+      inactive: ensureStyleVariant(xfNode, "3")
+    });
+  });
+
+  return variantMap;
+}
+
+function getWorksheetRelationshipsPath(worksheetPath) {
+  return `${getZipDirectoryPath(worksheetPath)}/_rels/${getZipBaseName(worksheetPath)}.rels`;
+}
+
+function getDrawingRelationshipsPath(drawingPath) {
+  return `${getZipDirectoryPath(drawingPath)}/_rels/${getZipBaseName(drawingPath)}.rels`;
+}
+
+function getWorksheetDrawingPath(workbook, worksheetDoc, worksheetPath) {
+  const drawingNode = worksheetDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "drawing")[0];
+  if (!drawingNode) {
+    return null;
+  }
+
+  const relationshipId = drawingNode.getAttributeNS(EXCEL_RELATIONSHIP_NAMESPACE, "id") || drawingNode.getAttribute("r:id");
+  if (!relationshipId) {
+    return null;
+  }
+
+  const relationshipsPath = getWorksheetRelationshipsPath(worksheetPath);
+  const relationshipsFile = workbook.file(relationshipsPath);
+  if (!relationshipsFile) {
+    return null;
+  }
+
+  return relationshipsFile.async("string").then((xmlText) => {
+    const relationshipsDoc = parseXmlDocument(xmlText);
+    const relationship = Array.from(relationshipsDoc.getElementsByTagNameNS(PACKAGE_RELATIONSHIP_NAMESPACE, "Relationship"))
+      .find((item) => item.getAttribute("Id") === relationshipId && item.getAttribute("Type") === EXCEL_DRAWING_RELATIONSHIP_TYPE);
+
+    if (!relationship) {
+      return null;
+    }
+
+    return resolveZipPath(worksheetPath, relationship.getAttribute("Target") || "");
+  });
+}
+
+function appendTextElement(parentNode, namespace, localName, textContent) {
+  const element = parentNode.ownerDocument.createElementNS(namespace, localName);
+  element.textContent = String(textContent);
+  parentNode.append(element);
+  return element;
+}
+
+function createDrawingAnchor(worksheetDoc, placement, relationshipId, shapeId) {
+  const root = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:oneCellAnchor");
+  const fromNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:from");
+  const extNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:ext");
+  const picNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:pic");
+  const nvPicPrNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:nvPicPr");
+  const cNvPrNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:cNvPr");
+  const cNvPicPrNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:cNvPicPr");
+  const picLocksNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:picLocks");
+  const blipFillNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:blipFill");
+  const blipNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:blip");
+  const stretchNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:stretch");
+  const fillRectNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:fillRect");
+  const spPrNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:spPr");
+  const xfrmNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:xfrm");
+  const offNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:off");
+  const picExtNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:ext");
+  const prstGeomNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:prstGeom");
+  const avLstNode = worksheetDoc.createElementNS(EXCEL_DRAWING_MAIN_NAMESPACE, "a:avLst");
+  const clientDataNode = worksheetDoc.createElementNS(EXCEL_DRAWING_NAMESPACE, "xdr:clientData");
+  const { width, height, columnNumber, rowNumber, columnOffset = 0, rowOffset = 0 } = placement;
+
+  appendTextElement(fromNode, EXCEL_DRAWING_NAMESPACE, "xdr:col", columnNumber - 1);
+  appendTextElement(fromNode, EXCEL_DRAWING_NAMESPACE, "xdr:colOff", columnOffset);
+  appendTextElement(fromNode, EXCEL_DRAWING_NAMESPACE, "xdr:row", rowNumber - 1);
+  appendTextElement(fromNode, EXCEL_DRAWING_NAMESPACE, "xdr:rowOff", rowOffset);
+
+  extNode.setAttribute("cx", String(width * EXCEL_EMUS_PER_PIXEL));
+  extNode.setAttribute("cy", String(height * EXCEL_EMUS_PER_PIXEL));
+
+  cNvPrNode.setAttribute("id", String(shapeId));
+  cNvPrNode.setAttribute("name", `Stamp ${shapeId}`);
+  cNvPrNode.setAttribute("descr", placement.name);
+
+  picLocksNode.setAttribute("noChangeAspect", "1");
+  cNvPicPrNode.append(picLocksNode);
+  nvPicPrNode.append(cNvPrNode, cNvPicPrNode);
+
+  blipNode.setAttributeNS(EXCEL_RELATIONSHIP_NAMESPACE, "r:embed", relationshipId);
+  stretchNode.append(fillRectNode);
+  blipFillNode.append(blipNode, stretchNode);
+
+  offNode.setAttribute("x", "0");
+  offNode.setAttribute("y", "0");
+  picExtNode.setAttribute("cx", String(width * EXCEL_EMUS_PER_PIXEL));
+  picExtNode.setAttribute("cy", String(height * EXCEL_EMUS_PER_PIXEL));
+  xfrmNode.append(offNode, picExtNode);
+  prstGeomNode.setAttribute("prst", "rect");
+  prstGeomNode.append(avLstNode);
+  spPrNode.append(xfrmNode, prstGeomNode);
+
+  picNode.append(nvPicPrNode, blipFillNode, spPrNode);
+  root.append(fromNode, extNode, picNode, clientDataNode);
+  return root;
+}
+
+function getStampPlacements() {
+  const placements = [];
+
+  if (state.operationManager) {
+    placements.push({
+      name: state.operationManager,
+      size: "large",
+      cellRef: "AI2",
+      columnOffset: 18000,
+      rowOffset: 12000
+    });
+  }
+
+  if (state.maintenanceManager) {
+    placements.push({
+      name: state.maintenanceManager,
+      size: "large",
+      cellRef: "AL2",
+      columnOffset: 18000,
+      rowOffset: 12000
+    });
+  }
+
+  for (let day = 1; day <= EXCEL_DAY_COLUMNS.length; day += 1) {
+    const stampName = state.maintenanceBottomByDay[String(day)];
+    if (!stampName) {
+      continue;
+    }
+
+    placements.push({
+      name: stampName,
+      size: "small",
+      cellRef: `${EXCEL_DAY_COLUMNS[day - 1]}${EXCEL_BOTTOM_STAMP_ROW}`,
+      columnOffset: 19050,
+      rowOffset: 19050
+    });
+  }
+
+  return placements.map((placement) => ({
+    ...placement,
+    ...parseCellReference(placement.cellRef),
+    ...(EXCEL_STAMP_IMAGE_SIZES[placement.size] || EXCEL_STAMP_IMAGE_SIZES.small)
+  }));
+}
+
+async function applyStampImagesToWorksheet(workbook, worksheetDoc, worksheetPath, placements, stampMediaStore) {
+  if (!placements.length) {
+    return;
+  }
+
+  const drawingPath = await getWorksheetDrawingPath(workbook, worksheetDoc, worksheetPath);
+  if (!drawingPath) {
+    throw new Error(`Excel シートの画像領域を特定できませんでした: ${worksheetPath}`);
+  }
+
+  const drawingFile = workbook.file(drawingPath);
+  if (!drawingFile) {
+    throw new Error(`Excel の drawing を開けません: ${drawingPath}`);
+  }
+
+  const drawingDoc = parseXmlDocument(await drawingFile.async("string"));
+  const drawingRoot = drawingDoc.documentElement;
+  clearElementChildren(drawingRoot);
+
+  const drawingRelationshipsPath = getDrawingRelationshipsPath(drawingPath);
+  const drawingRelationshipsDoc = createRelationshipsDocument();
+  const drawingRelationshipsRoot = drawingRelationshipsDoc.documentElement;
+
+  let nextRelationshipIndex = 1;
+  let nextShapeId = 1;
+  for (const placement of placements) {
+    const image = await stampMediaStore.getStampImage(placement.name, placement.size);
+    if (!image) {
+      continue;
+    }
+
+    const relationshipId = `rId${nextRelationshipIndex}`;
+    nextRelationshipIndex += 1;
+
+    const relationshipNode = drawingRelationshipsDoc.createElementNS(PACKAGE_RELATIONSHIP_NAMESPACE, "Relationship");
+    relationshipNode.setAttribute("Id", relationshipId);
+    relationshipNode.setAttribute("Type", EXCEL_IMAGE_RELATIONSHIP_TYPE);
+    relationshipNode.setAttribute("Target", `../media/${getZipBaseName(image.mediaPath)}`);
+    drawingRelationshipsRoot.append(relationshipNode);
+
+    drawingRoot.append(createDrawingAnchor(drawingDoc, { ...placement, ...image }, relationshipId, nextShapeId));
+    nextShapeId += 1;
+  }
+
+  workbook.file(drawingPath, serializeXmlDocument(drawingDoc));
+  workbook.file(drawingRelationshipsPath, serializeXmlDocument(drawingRelationshipsDoc));
+}
+
+function setWorkbookActiveSheet(workbookDoc, sheetIndex) {
+  const workbookView = workbookDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "workbookView")[0];
+  if (workbookView) {
+    workbookView.setAttribute("activeTab", String(sheetIndex));
+  }
+}
+
+function setWorksheetSelected(worksheetDoc, isSelected) {
+  const sheetView = worksheetDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "sheetView")[0];
+  if (!sheetView) {
+    return;
+  }
+
+  if (isSelected) {
+    sheetView.setAttribute("tabSelected", "1");
+  } else {
+    sheetView.removeAttribute("tabSelected");
+  }
+}
+
+function getWorksheetRowsMap(worksheetDoc) {
+  return new Map(
+    Array.from(worksheetDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "row")).map((row) => [Number(row.getAttribute("r")), row])
+  );
+}
+
+function ensureWorksheetRow(worksheetDoc, rowsMap, rowNumber) {
+  let row = rowsMap.get(rowNumber);
+  if (row) {
+    return row;
+  }
+
+  const sheetData = worksheetDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "sheetData")[0];
+  row = worksheetDoc.createElementNS(EXCEL_SHEET_NAMESPACE, "row");
+  row.setAttribute("r", String(rowNumber));
+
+  const insertBefore = Array.from(sheetData.childNodes)
+    .find((candidate) => candidate.nodeType === Node.ELEMENT_NODE && Number(candidate.getAttribute("r")) > rowNumber);
+  sheetData.insertBefore(row, insertBefore || null);
+  rowsMap.set(rowNumber, row);
+  return row;
+}
+
+function getRowCells(row) {
+  return Array.from(row.childNodes).filter((child) => child.nodeType === Node.ELEMENT_NODE && child.localName === "c");
+}
+
+function ensureWorksheetCell(worksheetDoc, rowsMap, cellMap, cellRef) {
+  let cell = cellMap.get(cellRef);
+  if (cell) {
+    return cell;
+  }
+
+  const { columnNumber, rowNumber } = parseCellReference(cellRef);
+  const row = ensureWorksheetRow(worksheetDoc, rowsMap, rowNumber);
+  const rowCells = getRowCells(row);
+  const insertBefore = rowCells.find((candidate) => {
+    const { columnNumber: candidateColumn } = parseCellReference(candidate.getAttribute("r"));
+    return candidateColumn > columnNumber;
+  });
+  const styleSource = (
+    rowCells.find((candidate) => {
+      const { columnNumber: candidateColumn } = parseCellReference(candidate.getAttribute("r"));
+      return candidateColumn < columnNumber;
+    })
+    || insertBefore
+  );
+
+  cell = worksheetDoc.createElementNS(EXCEL_SHEET_NAMESPACE, "c");
+  cell.setAttribute("r", cellRef);
+  if (styleSource?.hasAttribute("s")) {
+    cell.setAttribute("s", styleSource.getAttribute("s"));
+  }
+
+  row.insertBefore(cell, insertBefore || null);
+  cellMap.set(cellRef, cell);
+  return cell;
+}
+
+function buildWorksheetContext(worksheetDoc) {
+  const rowsMap = getWorksheetRowsMap(worksheetDoc);
+  const cellMap = new Map(
+    Array.from(worksheetDoc.getElementsByTagNameNS(EXCEL_SHEET_NAMESPACE, "c")).map((cell) => [cell.getAttribute("r"), cell])
+  );
+  return { worksheetDoc, rowsMap, cellMap };
+}
+
+function setWorksheetCellText(worksheetContext, cellRef, value) {
+  const cell = ensureWorksheetCell(
+    worksheetContext.worksheetDoc,
+    worksheetContext.rowsMap,
+    worksheetContext.cellMap,
+    cellRef
+  );
+
+  while (cell.firstChild) {
+    cell.removeChild(cell.firstChild);
+  }
+
+  if (!value) {
+    cell.removeAttribute("t");
+    return;
+  }
+
+  const inlineStringEl = cell.ownerDocument.createElementNS(EXCEL_SHEET_NAMESPACE, "is");
+  const textEl = cell.ownerDocument.createElementNS(EXCEL_SHEET_NAMESPACE, "t");
+
+  cell.setAttribute("t", "inlineStr");
+  textEl.setAttributeNS(XML_NAMESPACE, "xml:space", "preserve");
+  textEl.textContent = value;
+  inlineStringEl.append(textEl);
+  cell.append(inlineStringEl);
+}
+
+function applyHolidayStylesToWorksheet(worksheetDoc, styleFillVariantMap) {
+  const { cellMap } = buildWorksheetContext(worksheetDoc);
+  const daysInMonth = getDaysInSelectedMonth();
+
+  for (let day = 1; day <= EXCEL_DAY_COLUMNS.length; day += 1) {
+    const columnLabel = EXCEL_DAY_COLUMNS[day - 1];
+    const isCustomHoliday = day <= daysInMonth && isHolidayDay(day);
+    const styleKind = day > daysInMonth
+      ? "inactive"
+      : (isCustomHoliday ? "holiday" : "normal");
+
+    for (let rowNumber = 5; rowNumber <= 30; rowNumber += 1) {
+      const cell = cellMap.get(`${columnLabel}${rowNumber}`);
+      if (!cell || !cell.hasAttribute("s")) {
+        continue;
+      }
+
+      const currentStyleIndex = Number(cell.getAttribute("s"));
+      const variants = styleFillVariantMap.get(currentStyleIndex);
+      const nextStyleIndex = variants?.[styleKind];
+
+      if (Number.isInteger(nextStyleIndex)) {
+        cell.setAttribute("s", String(nextStyleIndex));
+      }
+    }
+  }
+}
+
+function populateExcelWorksheet(worksheetDoc, options = {}) {
+  const { year, month } = getSelectedYearMonth();
+  const daysInMonth = getDaysInSelectedMonth();
+  const driverIdentity = getDriverIdentity();
+  const worksheetContext = buildWorksheetContext(worksheetDoc);
+  const { isTemplateLayout = false } = options;
+
+  setWorksheetCellText(worksheetContext, "A3", `令和${getReiwaYear(year)}年${month}月`);
+
+  if (isTemplateLayout) {
+    setWorksheetCellText(worksheetContext, "F3", `車番：${vehicleEl.value.trim()}`);
+    setWorksheetCellText(worksheetContext, "J3", `運転者名（点検者）：${driverIdentity.displayValue}`);
+  } else {
+    setWorksheetCellText(worksheetContext, "H3", vehicleEl.value.trim());
+    setWorksheetCellText(worksheetContext, "P3", driverIdentity.displayValue);
+  }
+
+  setWorksheetCellText(worksheetContext, "AI2", "");
+  setWorksheetCellText(worksheetContext, "AL2", "");
+
+  for (let day = 1; day <= EXCEL_DAY_COLUMNS.length; day += 1) {
+    const columnLabel = EXCEL_DAY_COLUMNS[day - 1];
+    const dayLabel = day <= daysInMonth ? String(day) : "";
+    const weekday = day <= daysInMonth
+      ? EXCEL_WEEKDAY_LABELS[new Date(year, month - 1, day).getDay()]
+      : "";
+    setWorksheetCellText(worksheetContext, `${columnLabel}5`, dayLabel);
+    setWorksheetCellText(worksheetContext, `${columnLabel}6`, weekday);
+    setWorksheetCellText(worksheetContext, `${columnLabel}${EXCEL_BOTTOM_STAMP_ROW}`, "");
+
+    for (let itemIndex = 0; itemIndex < CHECK_FIELD_ORDER.length; itemIndex += 1) {
+      const rawValue = day <= daysInMonth
+        ? (state.checks[checkKey(itemIndex, day)] || "")
+        : "";
+      const displayValue = rawValue === HOLIDAY_MARK ? "" : rawValue;
+      setWorksheetCellText(worksheetContext, `${columnLabel}${EXCEL_CHECK_START_ROW + itemIndex}`, displayValue);
+    }
+  }
+}
+
+async function downloadExcel() {
+  const vehicle = vehicleEl.value.trim();
+  const driverIdentity = getDriverIdentity();
+  if (!vehicle || !driverIdentity.storageValue) {
+    setStatus("Excel保存前に車番・運転者を選択してください", true);
+    return;
+  }
+
+  syncHolidayChecks();
+  setStatus("Excelファイルを作成しています...");
+
+  const [JSZip, templateBuffer] = await Promise.all([
+    getJsZipModule(),
+    fetchExcelTemplateArrayBuffer()
+  ]);
+  const workbook = await JSZip.loadAsync(templateBuffer);
+  const contentTypesDoc = parseXmlDocument(await workbook.file("[Content_Types].xml").async("string"));
+  const stylesDoc = parseXmlDocument(await workbook.file("xl/styles.xml").async("string"));
+  const workbookDoc = parseXmlDocument(await workbook.file("xl/workbook.xml").async("string"));
+  const workbookRelsDoc = parseXmlDocument(await workbook.file("xl/_rels/workbook.xml.rels").async("string"));
+  const { month } = getSelectedYearMonth();
+  const targetSheet = resolveExcelSheetTarget(workbookDoc, workbookRelsDoc, month);
+  const templateSheet = getWorkbookSheetTarget(workbookDoc, workbookRelsDoc, EXCEL_TEMPLATE_SHEET_NAME);
+  const inspectionSheets = getInspectionSheetTargets(workbookDoc, workbookRelsDoc);
+  const styleFillVariantMap = buildStyleFillVariantMap(stylesDoc);
+  const stampPlacements = getStampPlacements();
+  const stampMediaStore = await createExcelStampMediaStore(workbook, contentTypesDoc);
+
+  if (!targetSheet) {
+    throw new Error("Excelテンプレート内の出力先シートが見つかりません");
+  }
+
+  if (!EXCEL_MONTH_SHEET_NAMES[month]) {
+    targetSheet.sheet.setAttribute("name", `日常点検記録表${month}月`);
+  }
+
+  for (const sheetTarget of inspectionSheets) {
+    const worksheetFile = workbook.file(sheetTarget.path);
+    if (!worksheetFile) {
+      throw new Error(`Excelテンプレートのワークシートを開けません: ${sheetTarget.path}`);
+    }
+
+    const worksheetDoc = parseXmlDocument(await worksheetFile.async("string"));
+    populateExcelWorksheet(worksheetDoc, {
+      isTemplateLayout: sheetTarget.path === templateSheet?.path
+    });
+    applyHolidayStylesToWorksheet(worksheetDoc, styleFillVariantMap);
+    await applyStampImagesToWorksheet(workbook, worksheetDoc, sheetTarget.path, stampPlacements, stampMediaStore);
+    setWorksheetSelected(worksheetDoc, sheetTarget.path === targetSheet.path);
+    workbook.file(sheetTarget.path, serializeXmlDocument(worksheetDoc));
+  }
+
+  workbook.file("[Content_Types].xml", serializeXmlDocument(contentTypesDoc));
+  workbook.file("xl/styles.xml", serializeXmlDocument(stylesDoc));
+  setWorkbookActiveSheet(workbookDoc, targetSheet.index);
+  workbook.file("xl/workbook.xml", serializeXmlDocument(workbookDoc));
+
+  const excelBlob = await workbook.generateAsync({
+    type: "blob",
+    mimeType: EXCEL_MIME_TYPE
+  });
+
+  downloadBlob(excelBlob, buildExcelFileName());
+  setStatus("Excelファイルを保存しました");
+}
+
 function buildCsvRows() {
   syncHolidayChecks();
   const driverIdentity = getDriverIdentity();
@@ -812,20 +1661,13 @@ function buildCsvRows() {
 }
 
 function downloadCsv() {
+  const csvText = serializeCsv(buildCsvRows());
+  const blob = new Blob(["\uFEFF", csvText], { type: "text/csv;charset=utf-8;" });
   const month = monthEl.value || "month";
   const vehicle = sanitizeFileNamePart(vehicleEl.value, "vehicle");
   const driver = sanitizeFileNamePart(stripDriverReading(driverEl.value), "driver");
-  const csvText = serializeCsv(buildCsvRows());
-  const blob = new Blob(["\uFEFF", csvText], { type: "text/csv;charset=utf-8;" });
-  const downloadUrl = URL.createObjectURL(blob);
-  const linkEl = document.createElement("a");
 
-  linkEl.href = downloadUrl;
-  linkEl.download = `${month}_${vehicle}_${driver}_inspection.csv`;
-  document.body.append(linkEl);
-  linkEl.click();
-  linkEl.remove();
-  URL.revokeObjectURL(downloadUrl);
+  downloadBlob(blob, `${month}_${vehicle}_${driver}_inspection.csv`);
 
   setStatus("CSVファイルを保存しました");
 }
@@ -1157,6 +1999,12 @@ document.getElementById("saveBtn").addEventListener("click", () => {
 
 document.getElementById("operationManagerSlot").addEventListener("click", () => toggleStamp("operationManager", "岸田"));
 document.getElementById("maintenanceManagerSlot").addEventListener("click", () => toggleStamp("maintenanceManager", "若本"));
+
+exportExcelBtnEl.addEventListener("click", () => {
+  downloadExcel().catch((error) => {
+    setStatus(`Excel保存失敗: ${error.message}`, true);
+  });
+});
 
 exportCsvBtnEl.addEventListener("click", () => {
   try {

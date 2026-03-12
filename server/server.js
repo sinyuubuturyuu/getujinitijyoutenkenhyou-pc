@@ -9,6 +9,10 @@ const rootDir = path.resolve(__dirname, "..");
 const publicDir = path.join(rootDir, "src");
 const dataDir = path.join(rootDir, "data");
 const dataFile = path.join(dataDir, "records.json");
+const excelTemplateCandidates = [
+  path.join(rootDir, "月次日常点検 2026.xlsx"),
+  path.join(rootDir, "月次日常点検 2026 (1).xlsx")
+];
 
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 if (!fs.existsSync(dataFile)) {
@@ -19,7 +23,8 @@ const contentTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8"
+  ".json": "application/json; charset=utf-8",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 };
 
 function sendJson(res, status, payload) {
@@ -90,6 +95,28 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       return sendJson(res, 400, { error: err.message });
     }
+  }
+
+  if (url.pathname === "/api/excel-template" && req.method === "GET") {
+    const templatePath = excelTemplateCandidates.find((candidate) => fs.existsSync(candidate));
+    if (!templatePath) {
+      res.writeHead(404);
+      return res.end("Template Not Found");
+    }
+
+    fs.readFile(templatePath, (err, data) => {
+      if (err) {
+        res.writeHead(500);
+        return res.end("Failed to read template");
+      }
+
+      res.writeHead(200, {
+        "Content-Type": contentTypes[".xlsx"],
+        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(path.basename(templatePath))}`
+      });
+      res.end(data);
+    });
+    return;
   }
 
   let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
